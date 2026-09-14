@@ -10,6 +10,10 @@
 // that already removed the prefix, the usual way uvicorn's --root-path is
 // deployed, and a health check that bypasses the mount. One that shares only
 // the first letters of a segment, `/apis` under `/api`, is not under the mount.
+//
+// The prefix is matched against the percent-decoded path, the one the
+// application is given, so `/%61pi/users` is under `/api` as `/api/users` is.
+// ASGI's raw_path keeps the target as it came.
 //===----------------------------------------------------------------------===//
 
 import PeregrineCore

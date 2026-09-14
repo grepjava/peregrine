@@ -1909,19 +1909,21 @@ def test_root_path():
     # Behind a proxy mounting the application under /api, a request may arrive
     # with the prefix or, when the proxy took it off, without. Either way the
     # application's path is the part within it, and nothing is cut from a
-    # path the prefix is not on.
+    # path the prefix is not on. The prefix is matched as the application
+    # reads the path, percent-decoded.
     port = free_port()
     with Server("--root-path", "/api", port=port) as server:
-        for target in ("/api/scope", "/scope"):
+        for target in ("/api/scope", "/scope", "/%61pi/scope", "/%61pi/sc%6fpe"):
             code, _hdrs, body = server.get(target)
             scope = json.loads(body) if code == 200 else {}
             is_("ASGI %s is answered" % target, code, 200)
             is_("with path /scope", scope.get("path"), "/scope")
             is_("and root_path /api", scope.get("root_path"), "/api")
+            is_("and raw_path as it was sent", scope.get("raw_path"), target)
 
     port = free_port()
     with Server("--root-path", "/api", port=port, app="wsgi_app:application") as server:
-        for target in ("/api/env", "/env"):
+        for target in ("/api/env", "/env", "/%61pi/env"):
             code, _hdrs, body = server.get(target)
             text = body.decode() if isinstance(body, bytes) else body
             is_("WSGI %s is answered" % target, code, 200)

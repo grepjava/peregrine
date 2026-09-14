@@ -34,6 +34,11 @@ version reached PyPI, in UTC.
   application.
 - `--static-dir`: a mount at `/`, or at any prefix ending in a slash, served
   nothing, and every request under it went to the application.
+- `--root-path`: the prefix was matched before the path was percent-decoded,
+  so `/%61pi/users` under `--root-path /api` reached the application as
+  `/api/users` rather than `/users`. It is now matched against the decoded
+  path, over ASGI and WSGI alike; ASGI's `raw_path` still has the target as it
+  came.
 
 ---
 

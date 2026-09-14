@@ -148,16 +148,19 @@ public struct WSGIRuntime {
         }
 
         // PATH_INFO -- percent-decoded, then latin-1 as PEP 3333 requires.
-        var pathPtr = base + Int(head.path.offset)
-        var pathLen = Int(head.path.length)
-        (pathPtr, pathLen) = root.strip(pathPtr, pathLen)
+        // The mount comes off the decoded path, so `/%61pi/users` is under
+        // `/api` just as the application reads it.
+        let pathPtr = base + Int(head.path.offset)
+        let pathLen = Int(head.path.length)
         if head.flags.contains(.escapedPath) && pathLen <= scratchCapacity {
             let decoded = percentDecode(pathPtr, pathLen, into: scratch)
-            guard put(Interned[.pathInfo], latin1(scratch, decoded)) else {
+            let (within, withinLen) = root.strip(UnsafePointer(scratch), decoded)
+            guard put(Interned[.pathInfo], latin1(within, withinLen)) else {
                 pg_decref(env); return nil
             }
         } else {
-            guard put(Interned[.pathInfo], latin1(pathPtr, pathLen)) else {
+            let (within, withinLen) = root.strip(pathPtr, pathLen)
+            guard put(Interned[.pathInfo], latin1(within, withinLen)) else {
                 pg_decref(env); return nil
             }
         }

@@ -193,20 +193,23 @@ public struct ASGIScopeBuilder {
             }
         }
 
-        // raw_path is the target bytes exactly as received; path is decoded.
-        var pathPtr = base + Int(head.path.offset)
-        var pathLen = Int(head.path.length)
+        // raw_path is the target bytes exactly as received; path is decoded,
+        // and the mount comes off the decoded path, so `/%61pi/users` is under
+        // `/api` just as the application reads it.
+        let pathPtr = base + Int(head.path.offset)
+        let pathLen = Int(head.path.length)
         guard put(Interned[.rawPath], bytes(pathPtr, pathLen)) else {
             pg_decref(scope); return nil
         }
-        (pathPtr, pathLen) = root.strip(pathPtr, pathLen)
         if head.flags.contains(.escapedPath) && pathLen <= scratchCapacity {
             let decoded = percentDecode(pathPtr, pathLen, into: scratch)
-            guard put(Interned[.path], utf8(scratch, decoded)) else {
+            let (within, withinLen) = root.strip(UnsafePointer(scratch), decoded)
+            guard put(Interned[.path], utf8(within, withinLen)) else {
                 pg_decref(scope); return nil
             }
         } else {
-            guard put(Interned[.path], utf8(pathPtr, pathLen)) else {
+            let (within, withinLen) = root.strip(pathPtr, pathLen)
+            guard put(Interned[.path], utf8(within, withinLen)) else {
                 pg_decref(scope); return nil
             }
         }
