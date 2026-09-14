@@ -147,6 +147,26 @@ is "keep-alive survives a static file" \
 
 server_stop
 
+# --- a mount at the root -------------------------------------------------
+# A prefix that ends in a slash, `/` above all, is on a segment boundary
+# already.
+server_start "$BIN" --port "$PORT" --workers 2 --log-level error \
+    --static-dir "/=$WORK/assets" --static-dir "/files/=$WORK/assets/deep" \
+    --python-path "$ROOT/examples" wsgi_app:application \
+    > "$WORK/root.log" 2>&1
+for _ in $(seq 1 60); do
+    curl -sS --max-time 1 -o /dev/null "http://127.0.0.1:$PORT/" 2>/dev/null && break
+    sleep 0.2
+done
+is "a file under a / mount is served"      "$(body $H/site.css)"         "body { color: red }"
+is "and a nested one"                      "$(body $H/deep/nested.txt)"  "deep"
+is "a prefix ending in a slash is served"  "$(body $H/files/nested.txt)" "deep"
+is "a symlink out of a / mount is refused" "$(code $H/escape.txt)"       "404"
+is "dot-dot does not escape a / mount"     "$(code --path-as-is $H/../secret/passwd)" "404"
+is "the root itself reaches the app"       "$(body $H/)"                 "hello from peregrine"
+
+server_stop
+
 # --- over TLS ------------------------------------------------------------
 # sendfile cannot encrypt, so TLS takes the read-and-buffer path. It has to
 # produce the same bytes.

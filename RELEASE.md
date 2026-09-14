@@ -32,6 +32,8 @@ version reached PyPI, in UTC.
   given one 30 seconds old. A request's `max-age` and `min-fresh` now limit
   the copy it is answered with, and one that does not qualify reaches the
   application.
+- `--static-dir`: a mount at `/`, or at any prefix ending in a slash, served
+  nothing, and every request under it went to the application.
 
 ---
 

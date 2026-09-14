@@ -191,8 +191,10 @@ extension Worker {
             }
             guard matches else { continue }
             // The prefix has to end on a segment boundary, so /staticky is not
-            // a request for the /static route.
-            if n > prefixLength && decoded[prefixLength] != UInt8(ascii: "/") { continue }
+            // a request for the /static route. A prefix that ends in a slash,
+            // `/` above all, ends on one already.
+            if n > prefixLength && decoded[prefixLength] != UInt8(ascii: "/")
+                && decoded[prefixLength - 1] != UInt8(ascii: "/") { continue }
 
             var size: Int64 = 0
             var mtime: Int64 = 0
