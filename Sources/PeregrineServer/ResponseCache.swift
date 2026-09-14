@@ -11,7 +11,13 @@
 // The key is the scheme, the host and the whole request target, plus the
 // forwarding headers when the peer is a trusted proxy, since those change
 // what the application thinks it was asked. HEAD is answered from a GET's
-// copy and never stores one.
+// copy and never stores one. A response that says `Vary: Accept-Encoding` is
+// kept with its request's Accept-Encoding, and served only to requests that
+// send the same one; another reaches the application, and its response takes
+// the copy's place.
+//
+// A request's own `max-age` and `min-fresh` are honoured too: a copy older
+// than the one, or with less left than the other, is not what it asked for.
 //
 // A request that changes its target -- any method but GET, HEAD, OPTIONS,
 // TRACE and CONNECT -- is marked at dispatch. When its response has a 2xx or
@@ -65,6 +71,9 @@ public struct ResponseCapture {
     var head = ByteBuffer()
     var body = ByteBuffer()
     var policy = ResponseCacheability()
+    /// The request's Accept-Encoding, which a response that varies on it is
+    /// kept with.
+    var encoding = EncodingVariant()
 
     public init() {}
 
@@ -72,11 +81,12 @@ public struct ResponseCapture {
     /// hashes to `mark`. The number is taken before the application runs, so
     /// a change to the target made while it is still answering keeps this
     /// response out of the cache.
-    mutating func arm(ttlLimit: Int, mark: UInt64) {
+    mutating func arm(ttlLimit: Int, mark: UInt64, encoding: EncodingVariant) {
         abandon()
         active = true
         self.ttlLimit = ttlLimit
         self.mark = mark
+        self.encoding = encoding
         sequence = pg_cache_begin()
         dispatchedMs = pg_monotonic_ms()
     }
@@ -87,6 +97,7 @@ public struct ResponseCapture {
         active = other.active
         ttlLimit = other.ttlLimit
         mark = other.mark
+        encoding = other.encoding
         sequence = other.sequence
         dispatchedMs = other.dispatchedMs
     }
@@ -104,7 +115,8 @@ public struct ResponseCapture {
     public mutating func settle(status: Int) {
         let now = pg_monotonic_ms()
         let delay = now > dispatchedMs ? Int(now - dispatchedMs) : 0
-        guard head.readableBytes <= Int(pg_cache_max_head()),
+        let markLength = policy.variesOnEncoding ? CachedHead.encodingVariantLength : 0
+        guard head.readableBytes + markLength <= Int(pg_cache_max_head()),
               let kept = policy.storage(status: status, limitSeconds: ttlLimit,
                                         responseDelayMs: delay,
                                         nowSeconds: Int(pg_unix_seconds())) else {
@@ -137,13 +149,23 @@ public struct ResponseCapture {
         let sent = now > settledMs ? Int(now - settledMs) : 0
         guard sent < keepMs else { return false }
         let keyPointer = UnsafePointer(key.readPointer)
-        let headLength = head.readableBytes
+        // A copy that varies on Accept-Encoding carries its request's ahead
+        // of its headers, where a lookup finds it without walking them.
+        var marked = ByteBuffer()
+        defer { marked.destroy() }
+        if policy.variesOnEncoding {
+            CachedHead.appendEncodingVariant(encoding, into: &marked)
+            if head.readableBytes > 0 { marked.write(UnsafePointer(head.readPointer), head.readableBytes) }
+        }
+        let headLength = policy.variesOnEncoding ? marked.readableBytes : head.readableBytes
+        let headPointer = policy.variesOnEncoding ? UnsafePointer(marked.readPointer)
+            : headLength > 0 ? UnsafePointer(head.readPointer) : keyPointer
         let bodyLength = body.readableBytes
         // An empty buffer may never have been given storage; any valid pointer
         // does for a length of zero.
         let stored = pg_cache_put(keyPointer, keyLength, mark, sequence, now,
                                   UInt64(ageMs + sent), UInt64(keepMs - sent), UInt16(status),
-                                  headLength > 0 ? UnsafePointer(head.readPointer) : keyPointer,
+                                  headPointer,
                                   headLength,
                                   bodyLength > 0 ? UnsafePointer(body.readPointer) : keyPointer,
                                   bodyLength)
@@ -162,6 +184,7 @@ public struct ResponseCapture {
         ageMs = 0
         keepMs = 0
         policy = ResponseCacheability()
+        encoding = EncodingVariant()
         head.destroy()
         body.destroy()
     }
@@ -220,6 +243,9 @@ extension Worker {
         var forwarded = ByteSpan(base, 0)
         var ifNoneMatch: ByteSpan? = nil
         var ifModifiedSince: ByteSpan? = nil
+        var encoding = EncodingVariant()
+        var maxAge = -1
+        var minFresh = -1
         var i = 0
         while i < c.pointee.head.headerCount {
             let h = headers[i]
@@ -232,6 +258,14 @@ extension Worker {
             case 9 where equalsLowercased(name.base, 9, "forwarded"): forwarded = value
             case 13 where equalsLowercased(name.base, 13, "if-none-match"):
                 if ifNoneMatch == nil { ifNoneMatch = value }
+            case 13 where equalsLowercased(name.base, 13, "cache-control"):
+                // What `excludes` let through still limits which copy will do.
+                var control = CacheControl()
+                control.parse(value.base, value.count)
+                if control.maxAge >= 0 { maxAge = maxAge < 0 ? control.maxAge : min(maxAge, control.maxAge) }
+                minFresh = max(minFresh, control.minFresh)
+            case 15 where equalsLowercased(name.base, 15, "accept-encoding"):
+                encoding.add(value.base, value.count)
             case 16 where equalsLowercased(name.base, 16, "x-forwarded-host"): forwardedHost = value
             case 17 where equalsLowercased(name.base, 17, "x-forwarded-proto"): forwardedProto = value
             case 17 where equalsLowercased(name.base, 17, "if-modified-since"):
@@ -283,11 +317,22 @@ extension Worker {
                                pg_monotonic_ms(), cacheScratch.writePointer,
                                cacheScratch.writableBytes, &headLength, &bodyLength,
                                &status, &ageMs, &ttlMs)
-        if hit == 1 {
+        let p = UnsafePointer(cacheScratch.writePointer)
+        var storedHead = ByteSpan(p, Int(headLength))
+        var usable = hit == 1
+            && RequestCacheability.accepts(ageMs: ageMs, ttlMs: ttlMs, maxAge: maxAge, minFresh: minFresh)
+        if usable, let variant = CachedHead.encodingVariant(p, Int(headLength)) {
+            // The response varied on Accept-Encoding, and this copy answers
+            // requests that send what its own request did. Any other goes to
+            // the application, whose response then takes the copy's place.
+            usable = variant == encoding.value
+            let skip = CachedHead.encodingVariantLength
+            storedHead = ByteSpan(p + skip, Int(headLength) - skip)
+        }
+        if usable {
             if Metrics.enabled { Metrics.add(PG_M_CACHE_HITS) }
-            let p = UnsafePointer(cacheScratch.writePointer)
             var entry = CachedEntry(status: Int(status),
-                                    head: ByteSpan(p, Int(headLength)),
+                                    head: storedHead,
                                     body: ByteSpan(p + Int(headLength), Int(bodyLength)),
                                     ageSeconds: Int(ageMs / 1000),
                                     ttlSeconds: Int((ttlMs + 999) / 1000),
@@ -316,7 +361,8 @@ extension Worker {
         if method == .get {
             let target = c.pointee.head.target.span(in: base)
             c.pointee.capture.arm(ttlLimit: config.cacheTTLMaxSeconds,
-                                  mark: pg_cache_target_hash(target.base, target.count))
+                                  mark: pg_cache_target_hash(target.base, target.count),
+                                  encoding: encoding)
         }
         return false
     }

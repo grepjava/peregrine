@@ -5,10 +5,11 @@
 // the failure being guarded against is one user's response served to another.
 // A response is kept only when it says so itself -- `s-maxage`, or `max-age`
 // -- and never when it is private, sets a cookie, varies on anything but
-// Accept-Encoding, or is already encoded. A request that carries credentials
-// or a cookie is neither answered from the cache nor stored in it: plenty of
-// applications personalise a page by cookie without saying `Vary: Cookie`,
-// and nothing in the response gives that away.
+// Accept-Encoding, or is already encoded. One that varies on Accept-Encoding
+// is served only to requests that send the same Accept-Encoding. A request
+// that carries credentials or a cookie is neither answered from the cache nor
+// stored in it: plenty of applications personalise a page by cookie without
+// saying `Vary: Cookie`, and nothing in the response gives that away.
 //===----------------------------------------------------------------------===//
 
 import PeregrineCore
@@ -17,6 +18,9 @@ import PeregrineCore
 public struct CacheControl: Sendable {
     public var maxAge = -1
     public var sharedMaxAge = -1
+    /// A request's `min-fresh`: how much longer, at least, the copy it is
+    /// answered with has to stay fresh.
+    public var minFresh = -1
     public var isPrivate = false
     public var noStore = false
     public var noCache = false
@@ -69,6 +73,13 @@ public struct CacheControl: Sendable {
                 maxAge = CacheControl.combine(maxAge, argument, hasArgument, &noCache)
             case 8 where equalsLowercased(name, 8, "s-maxage"):
                 sharedMaxAge = CacheControl.combine(sharedMaxAge, argument, hasArgument, &noCache)
+            case 9 where equalsLowercased(name, 9, "min-fresh"):
+                // Of two, the stricter, which here is the larger.
+                if hasArgument && argument < 0 {
+                    noCache = true
+                } else if hasArgument {
+                    minFresh = max(minFresh, argument)
+                }
             case 7 where equalsLowercased(name, 7, "private"):
                 isPrivate = true
             case 8 where equalsLowercased(name, 8, "no-store"):
@@ -100,6 +111,9 @@ public struct ResponseCacheability: Sendable {
     public var control = CacheControl()
     /// Something about the response rules it out, however fresh it says it is.
     public var excluded = false
+    /// The response said `Vary: Accept-Encoding`, so a copy of it answers
+    /// only requests that send the Accept-Encoding its own request did.
+    public var variesOnEncoding = false
     /// The response's Age in seconds, or -1 when it has none worth reading.
     public var ageSeconds = -1
     private var ageSeen = false
@@ -110,6 +124,10 @@ public struct ResponseCacheability: Sendable {
 
     public mutating func observe(_ name: ByteSpan, _ value: ByteSpan) {
         switch name.count {
+        case 1 where name.base[0] == 0:
+            // The name a copy's Accept-Encoding is kept under, which a
+            // response of the application's must not be able to forge.
+            excluded = true
         case 3 where equalsLowercased(name.base, 3, "age"):
             // A repeated Age is a list, and only its first member counts
             // (RFC 9111 section 5.1).
@@ -122,6 +140,8 @@ public struct ResponseCacheability: Sendable {
         case 4 where equalsLowercased(name.base, 4, "vary"):
             if !ResponseCacheability.variesOnlyOnEncoding(value.base, value.count) {
                 excluded = true
+            } else if containsTokenLowercased(value.base, value.count, "accept-encoding") {
+                variesOnEncoding = true
             }
         case 10 where equalsLowercased(name.base, 10, "set-cookie"):
             excluded = true
@@ -183,7 +203,43 @@ public struct ResponseCacheability: Sendable {
     }
 }
 
+/// A request's Accept-Encoding, reduced to a number that two requests share
+/// when they sent the same field (RFC 9111 section 4.1): every line of it as
+/// one list, compared without whitespace or case. 0 is a request without one.
+/// Two different fields that happened to share a number would only swap one
+/// public response for another.
+public struct EncodingVariant: Sendable, Equatable {
+    public private(set) var value: UInt64 = 0
+
+    public init() {}
+
+    /// Adds one line of the field.
+    public mutating func add(_ p: UnsafePointer<UInt8>, _ n: Int) {
+        // FNV-1a, with a comma between lines.
+        let prime: UInt64 = 0x0000_0100_0000_01B3
+        var h: UInt64 = value == 0 ? 0xCBF2_9CE4_8422_2325 : (value ^ 0x2C) &* prime
+        var i = 0
+        while i < n {
+            let ch = p[i]
+            i += 1
+            if ch == 0x20 || ch == 0x09 { continue }
+            h = (h ^ UInt64(asciiLower(ch))) &* prime
+        }
+        value = h == 0 ? 1 : h
+    }
+}
+
 public enum RequestCacheability {
+    /// Whether a copy `ageMs` old and fresh for `ttlMs` more is one the
+    /// request's own Cache-Control lets it be answered with (RFC 9111
+    /// section 5.2.1): no older than its `max-age`, and fresh for at least its
+    /// `min-fresh`. -1 is a directive the request did not send.
+    public static func accepts(ageMs: UInt64, ttlMs: UInt64, maxAge: Int, minFresh: Int) -> Bool {
+        if maxAge >= 0 && ageMs > UInt64(maxAge) * 1000 { return false }
+        if minFresh >= 0 && ttlMs < UInt64(minFresh) * 1000 { return false }
+        return true
+    }
+
     /// Whether a request header keeps the request away from the cache, both
     /// from being answered out of it and from its response being stored.
     public static func excludes(_ name: ByteSpan, _ value: ByteSpan) -> Bool {
@@ -320,6 +376,39 @@ public enum CacheValidation {
 /// value length, the name in lowercase and the value as the application sent
 /// it.
 public enum CachedHead {
+    /// How many bytes `appendEncodingVariant` writes.
+    public static let encodingVariantLength = 13
+
+    /// Marks a copy with the Accept-Encoding of the request it answered: a
+    /// header whose name is a single NUL, which no response can have, and
+    /// whose value is the variant's eight bytes. It goes first in the block.
+    public static func appendEncodingVariant(_ variant: EncodingVariant, into out: inout ByteBuffer) {
+        out.reserve(encodingVariantLength)
+        out.writeByte(0)
+        out.writeByte(1)
+        out.writeByte(0)
+        out.writeByte(8)
+        out.writeByte(0)
+        var shift = 56
+        while shift >= 0 {
+            out.writeByte(UInt8(truncatingIfNeeded: variant.value >> UInt64(shift)))
+            shift -= 8
+        }
+    }
+
+    /// The variant a block starts with, or nil when it has no mark.
+    public static func encodingVariant(_ p: UnsafePointer<UInt8>, _ n: Int) -> UInt64? {
+        guard n >= encodingVariantLength, p[0] == 0, p[1] == 1, p[2] == 0, p[3] == 8,
+              p[4] == 0 else { return nil }
+        var value: UInt64 = 0
+        var i = 5
+        while i < encodingVariantLength {
+            value = value << 8 | UInt64(p[i])
+            i += 1
+        }
+        return value
+    }
+
     /// Whether a response header is kept with a cached copy. Framing and
     /// connection headers belong to each response as it is sent; Date, Age
     /// and X-Request-ID are written fresh for every copy.

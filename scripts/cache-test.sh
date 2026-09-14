@@ -97,16 +97,27 @@ is "a hit leaves the connection open for the next request" "$codes" "200:1 200:0
 is "HEAD and keep-alive reached the application no more than before" "$(calls GET /fresh)" "1"
 
 echo "compressed for each client"
-fetch /vary-ae --http1.1 -H "Accept-Encoding: gzip"
+fetch /shared-copy --http1.1 -H "Accept-Encoding: gzip"
 is "the application's response is compressed for a client that asks" "$(header content-encoding)" "gzip"
 plain=$(gzip -dc < "$WORK/body")
-fetch /vary-ae --http1.1
+fetch /shared-copy --http1.1
 is "a client that does not ask gets the copy plain" "$(header content-encoding)" ""
 is "the same bytes" "$(cat "$WORK/body")" "$plain"
-fetch /vary-ae --http2 -H "Accept-Encoding: gzip"
+fetch /shared-copy --http2 -H "Accept-Encoding: gzip"
 is "and one that does gets it compressed" "$(header content-encoding)" "gzip"
 is "which decompresses to the same bytes" "$(gzip -dc < "$WORK/body")" "$plain"
-is "all from one call" "$(calls GET /vary-ae)" "1"
+is "all from one call" "$(calls GET /shared-copy)" "1"
+
+echo "a response that says Vary: Accept-Encoding"
+fetch /vary-ae --http1.1 -H "Accept-Encoding: gzip, br"
+fetch /vary-ae --http2 -H "Accept-Encoding: GZIP,br"
+is "is answered from the copy for the same Accept-Encoding" "$(calls GET /vary-ae)" "1"
+fetch /vary-ae --http1.1
+is "but not for a request without one" "$(calls GET /vary-ae)" "2"
+fetch /vary-ae --http1.1
+is "whose response is kept for it in turn" "$(calls GET /vary-ae)" "2"
+fetch /vary-ae --http1.1 -H "Accept-Encoding: gzip, br"
+is "and the first Accept-Encoding reaches the application again" "$(calls GET /vary-ae)" "3"
 
 echo "what is never kept"
 for route in /private /nostore /cookie /vary-ua /plain /broken /big; do
@@ -170,6 +181,12 @@ like "served with the age it arrived with" "$(header age)" '^3[0-9]$'
 ttl=$(header cache-status | sed -n 's/.*ttl=\([0-9]*\).*/\1/p')
 if [ -n "$ttl" ] && [ "$ttl" -le 30 ]; then ok "and only what is left of its lifetime"
 else bad "and only what is left of its lifetime" "a ttl of 30 or less" "${ttl:-none}"; fi
+fetch /half-aged --http1.1 -H "Cache-Control: max-age=600"
+is "a client's max-age the copy is within is answered from it" "$(calls GET /half-aged)" "1"
+fetch /half-aged --http1.1 -H "Cache-Control: max-age=10"
+is "one the copy is older than reaches the application" "$(calls GET /half-aged)" "2"
+fetch /half-aged --http1.1 -H "Cache-Control: min-fresh=45"
+is "and so does a min-fresh longer than the copy has left" "$(calls GET /half-aged)" "3"
 
 echo "conditional requests"
 fetch /etag --http1.1

@@ -20,6 +20,19 @@ version reached PyPI, in UTC.
 
 ## Unreleased
 
+### Fixed
+
+- `--cache-size`: a response that says `Vary: Accept-Encoding` was served to
+  every client, whatever Accept-Encoding it sent. A copy of one is now served
+  only to requests that send the same Accept-Encoding as the request it
+  answered; any other reaches the application, and its response takes the
+  copy's place.
+- `--cache-size`: a request's own `Cache-Control: max-age` was ignored unless
+  it was 0, so a client asking for a copy no more than a second old could be
+  given one 30 seconds old. A request's `max-age` and `min-fresh` now limit
+  the copy it is answered with, and one that does not qualify reaches the
+  application.
+
 ---
 
 ## 1.1.5 — 2026-09-14

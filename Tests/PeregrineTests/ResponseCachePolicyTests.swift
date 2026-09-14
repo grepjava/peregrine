@@ -147,6 +147,58 @@ func requestExclusions() {
     #expect(!excludes("User-Agent", "curl"))
 }
 
+@Test("a request's max-age and min-fresh limit the copy it is answered with")
+func requestFreshnessLimits() {
+    #expect(control("min-fresh=20, min-fresh=5").minFresh == 20)
+    #expect(control("min-fresh=soon").noCache)
+    #expect(RequestCacheability.accepts(ageMs: 30_000, ttlMs: 30_000, maxAge: -1, minFresh: -1))
+    #expect(!RequestCacheability.accepts(ageMs: 30_000, ttlMs: 30_000, maxAge: 1, minFresh: -1))
+    #expect(RequestCacheability.accepts(ageMs: 30_000, ttlMs: 30_000, maxAge: 30, minFresh: -1))
+    #expect(!RequestCacheability.accepts(ageMs: 30_001, ttlMs: 30_000, maxAge: 30, minFresh: -1))
+    #expect(RequestCacheability.accepts(ageMs: 0, ttlMs: 30_000, maxAge: -1, minFresh: 30))
+    #expect(!RequestCacheability.accepts(ageMs: 0, ttlMs: 29_999, maxAge: -1, minFresh: 30))
+}
+
+private func variant(_ lines: [String]) -> UInt64 {
+    var v = EncodingVariant()
+    for line in lines { withSpan(line) { v.add($0.base, $0.count) } }
+    return v.value
+}
+
+@Test("Accept-Encoding is compared as one list, without whitespace or case")
+func encodingVariants() {
+    #expect(variant([]) == 0)
+    #expect(variant([""]) != 0)
+    #expect(variant(["gzip, br"]) == variant(["GZIP,br"]))
+    #expect(variant(["gzip", "br"]) == variant(["gzip, br"]))
+    #expect(variant(["gzip"]) != variant(["br"]))
+    #expect(variant(["gzip, br"]) != variant(["br, gzip"]))
+}
+
+@Test("a response that varies on Accept-Encoding is marked, and no header can forge the mark")
+func encodingVariantMark() {
+    let cc = ("Cache-Control", "max-age=60")
+    #expect(policy([cc, ("Vary", "Accept-Encoding")]).variesOnEncoding)
+    #expect(policy([cc, ("Vary", "accept-encoding"), ("Vary", "")]).variesOnEncoding)
+    #expect(!policy([cc, ("Vary", "")]).variesOnEncoding)
+    #expect(!policy([cc]).variesOnEncoding)
+    #expect(fresh([cc, ("\0", "x")]) == 0)
+
+    var block = ByteBuffer()
+    defer { block.destroy() }
+    var v = EncodingVariant()
+    withSpan("gzip") { v.add($0.base, $0.count) }
+    CachedHead.appendEncodingVariant(v, into: &block)
+    #expect(block.readableBytes == CachedHead.encodingVariantLength)
+    withSpan("content-type") { n in withSpan("text/plain") { value in
+        #expect(CachedHead.append(name: n, value: value, into: &block))
+    } }
+    let p = UnsafePointer(block.readPointer)
+    #expect(CachedHead.encodingVariant(p, block.readableBytes) == v.value)
+    let skip = CachedHead.encodingVariantLength
+    #expect(CachedHead.encodingVariant(p + skip, block.readableBytes - skip) == nil)
+}
+
 @Test("stored headers round trip, lowercased, without framing or per-copy fields")
 func cachedHeadRoundTrip() {
     var block = ByteBuffer()
