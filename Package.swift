@@ -55,7 +55,7 @@ let package = Package(
     dependencies: [
         // The protocol and systems layers: syscalls, TLS, buffers, the poller,
         // HTTP/1.1, HTTP/2, HTTP/3 and QUIC.
-        .package(path: "../aviancore"),
+        .package(url: "https://github.com/grepjava/aviancore", from: "0.1.0"),
     ],
     targets: [
         // libpython, located through `python3-embed.pc` -- or, for the
