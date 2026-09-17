@@ -20,6 +20,12 @@ version reached PyPI, in UTC.
 
 ## Unreleased
 
+---
+
+## 1.1.6 — 2026-09-17
+
+Tagged and released on GitHub; not uploaded to PyPI.
+
 ### Changed
 
 - The protocol and systems layers moved to
