@@ -29,8 +29,8 @@ import Glibc
 import Darwin
 #endif
 
-import CPeregrine
-import PeregrineCore
+import CAvian
+import AvianCore
 
 final class ReloadWatcher {
     private let roots: [String]
@@ -68,13 +68,13 @@ final class ReloadWatcher {
         }
         self.roots = dirs
         self.intervalMs = max(100, config.reloadIntervalMs)
-        self.notifyFD = pg_watch_open()
+        self.notifyFD = av_watch_open()
         self.signature = scan()
-        self.lastScan = pg_monotonic_ms()
+        self.lastScan = av_monotonic_ms()
     }
 
     deinit {
-        if notifyFD >= 0 { pg_watch_close(notifyFD) }
+        if notifyFD >= 0 { av_watch_close(notifyFD) }
     }
 
     /// Whether a notification is waiting out `settleMs`, so the supervisor
@@ -84,8 +84,8 @@ final class ReloadWatcher {
     /// Whether anything changed since the last call. Cheap when nothing is
     /// due, so the supervisor calls it on every loop turn.
     func changed() -> Bool {
-        let now = pg_monotonic_ms()
-        if notifyFD >= 0 && pg_watch_drain(notifyFD) > 0 {
+        let now = av_monotonic_ms()
+        if notifyFD >= 0 && av_watch_drain(notifyFD) > 0 {
             // Every event restarts the wait: a save still in progress is not
             // yet the change to reload for. A tree that never stops changing
             // is still scanned, on the interval below.
@@ -126,7 +126,7 @@ final class ReloadWatcher {
 
         if notifyFD >= 0 {
             visited.insert(path)
-            if !watched.contains(path) && pg_watch_add(notifyFD, path) == 0 {
+            if !watched.contains(path) && av_watch_add(notifyFD, path) == 0 {
                 watched.insert(path)
             }
         }
@@ -141,7 +141,7 @@ final class ReloadWatcher {
             if ReloadWatcher.skipped.contains(name) { continue }
 
             let child = path == "." ? name : path + "/" + name
-            if pg_is_dir(child) == 1 {
+            if av_is_dir(child) == 1 {
                 walk(child, depth: depth + 1, into: &digest, visited: &visited)
                 continue
             }
@@ -152,7 +152,7 @@ final class ReloadWatcher {
             }
             if !watchedFile { continue }
 
-            let mtime = pg_mtime_ns(child)
+            let mtime = av_mtime_ns(child)
             if mtime < 0 { continue }
             var h: UInt64 = 1469598103934665603
             for byte in child.utf8 {

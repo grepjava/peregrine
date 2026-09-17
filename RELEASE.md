@@ -20,7 +20,18 @@ version reached PyPI, in UTC.
 
 ## Unreleased
 
+### Changed
+
+- The protocol and systems layers moved to
+  [aviancore](https://github.com/grepjava/aviancore), a package shared with
+  Garuda. Building from source, including from the sdist, now fetches it from
+  GitHub. The C functions are named `av_`, and `PEREGRINE_UDP_GSO` and
+  `PEREGRINE_NO_OPENAT2` are now `AVIAN_UDP_GSO` and `AVIAN_NO_OPENAT2`.
+
 ### Fixed
+
+- A QUIC stream reset before it had sent anything could be forgotten before its
+  RESET_STREAM went out, keeping its stream credit until the connection closed.
 
 - `--cache-size`: a response that says `Vary: Accept-Encoding` was served to
   every client, whatever Accept-Encoding it sent. A copy of one is now served

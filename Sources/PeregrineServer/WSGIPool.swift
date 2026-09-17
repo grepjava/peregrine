@@ -34,9 +34,10 @@
 // runs at the speed of the client, not the speed of the application.
 //===----------------------------------------------------------------------===//
 
+import CAvian
 import CPeregrine
-import PeregrineCore
-import PeregrineHTTP
+import AvianCore
+import AvianHTTP
 import PeregrinePython
 import PeregrineWSGI
 
@@ -206,12 +207,12 @@ public final class WSGIPool {
     private let threads: Int
 
     public init?(threads: Int, worker: UnsafeMutablePointer<Worker>) {
-        guard let m = pg_mutex_new(), let wc = pg_cond_new(), let dc = pg_cond_new() else {
+        guard let m = av_mutex_new(), let wc = av_cond_new(), let dc = av_cond_new() else {
             return nil
         }
         var fds: (Int32, Int32) = (-1, -1)
         let ok = withUnsafeMutablePointer(to: &fds) { p -> Bool in
-            p.withMemoryRebound(to: Int32.self, capacity: 2) { pg_pipe($0) == 0 }
+            p.withMemoryRebound(to: Int32.self, capacity: 2) { av_pipe($0) == 0 }
         }
         guard ok, let application = worker.pointee.wsgi?.app else { return nil }
 
@@ -229,7 +230,7 @@ public final class WSGIPool {
         // may pick up work before this initialiser has returned.
         let context = Unmanaged.passUnretained(self).toOpaque()
         for _ in 0..<threads {
-            if pg_thread_spawn(wsgiPoolThreadMain, context) != 0 {
+            if av_thread_spawn(wsgiPoolThreadMain, context) != 0 {
                 Log.error("could not start a WSGI pool thread")
                 if liveThreads == 0 { return nil }
                 break
@@ -246,9 +247,9 @@ public final class WSGIPool {
     /// the thread is still inside the application, and shutdown has to wait for
     /// it rather than finalise the interpreter underneath it.
     public var inFlight: Int {
-        pg_mutex_lock(mutex)
+        av_mutex_lock(mutex)
         let n = running
-        pg_mutex_unlock(mutex)
+        av_mutex_unlock(mutex)
         return n
     }
 
@@ -263,11 +264,11 @@ public final class WSGIPool {
             WSGIStartResponse.setSink(sr, wsgiPooledWriteSink,
                                       context: Unmanaged.passUnretained(job).toOpaque())
         }
-        pg_mutex_lock(mutex)
+        av_mutex_lock(mutex)
         running += 1
         pending.append(job)
-        pg_mutex_unlock(mutex)
-        pg_cond_signal(workCond)
+        av_mutex_unlock(mutex)
+        av_cond_signal(workCond)
     }
 
     /// Consumes the wakeup byte(s). The pipe is only a readiness signal; the
@@ -276,7 +277,7 @@ public final class WSGIPool {
         var scratch = (UInt8(0), UInt8(0), UInt8(0), UInt8(0), UInt8(0), UInt8(0), UInt8(0), UInt8(0))
         while true {
             let n = withUnsafeMutableBytes(of: &scratch) { raw in
-                pg_read(wakeupFD, raw.baseAddress!, 8)
+                av_read(wakeupFD, raw.baseAddress!, 8)
             }
             if n <= 0 { break }
         }
@@ -285,38 +286,38 @@ public final class WSGIPool {
     /// Jobs with something to report. Clearing `queued` lets a thread that is
     /// still producing enqueue the same job again.
     public func takeReady() -> [WSGIJob] {
-        pg_mutex_lock(mutex)
+        av_mutex_lock(mutex)
         let batch = ready
         ready.removeAll(keepingCapacity: true)
         for job in batch { job.queued = false }
-        pg_mutex_unlock(mutex)
+        av_mutex_unlock(mutex)
         return batch
     }
 
     /// Moves whatever the thread has produced into `dst`. Returns true once the
     /// job is complete and its plan can be applied.
     public func take(_ job: WSGIJob, into dst: inout ByteBuffer) -> Bool {
-        pg_mutex_lock(mutex)
+        av_mutex_lock(mutex)
         let available = job.out.readableBytes
         if available > 0 {
             dst.write(UnsafePointer(job.out.readPointer), available)
             job.out.clear()
         }
         let done = job.finished
-        pg_mutex_unlock(mutex)
+        av_mutex_unlock(mutex)
         // Whatever was blocked at the high water mark can carry on now.
-        if available > 0 { pg_cond_broadcast(drainCond) }
+        if available > 0 { av_cond_broadcast(drainCond) }
         return done
     }
 
     /// The connection went away. The thread stops at its next checkpoint and
     /// releases the job's Python references itself.
     public func cancel(_ job: WSGIJob) {
-        pg_mutex_lock(mutex)
+        av_mutex_lock(mutex)
         job.cancelled = true
         job.out.clear()
-        pg_mutex_unlock(mutex)
-        pg_cond_broadcast(drainCond)
+        av_mutex_unlock(mutex)
+        av_cond_broadcast(drainCond)
     }
 
     /// Stops the threads, waiting up to `deadlineMs` for the ones still inside
@@ -324,22 +325,22 @@ public final class WSGIPool {
     /// process is about to exit, and a thread stuck in a third-party library is
     /// not going to become unstuck.
     public func shutdown(deadlineMs: UInt64) {
-        pg_mutex_lock(mutex)
+        av_mutex_lock(mutex)
         stopping = true
-        pg_mutex_unlock(mutex)
-        pg_cond_broadcast(workCond)
-        pg_cond_broadcast(drainCond)
+        av_mutex_unlock(mutex)
+        av_cond_broadcast(workCond)
+        av_cond_broadcast(drainCond)
 
-        let deadline = pg_monotonic_ms() &+ max(deadlineMs, 100)
-        while pg_monotonic_ms() < deadline {
-            pg_mutex_lock(mutex)
+        let deadline = av_monotonic_ms() &+ max(deadlineMs, 100)
+        while av_monotonic_ms() < deadline {
+            av_mutex_lock(mutex)
             let remaining = liveThreads
-            pg_mutex_unlock(mutex)
+            av_mutex_unlock(mutex)
             if remaining == 0 { return }
             // The threads need the GIL to finish; the loop thread must not
             // hold it while waiting for them.
             let saved = pg_gil_save()
-            _ = pg_poll_single(wakeupFD, 0, 20)
+            _ = av_poll_single(wakeupFD, 0, 20)
             pg_gil_restore(saved)
         }
         Log.warn("WSGI pool threads did not stop within the grace period")
@@ -349,18 +350,18 @@ public final class WSGIPool {
 
     fileprivate func runThread() {
         while true {
-            pg_mutex_lock(mutex)
+            av_mutex_lock(mutex)
             while pending.isEmpty && !stopping {
-                pg_cond_wait(workCond, mutex)
+                av_cond_wait(workCond, mutex)
             }
             if pending.isEmpty {
                 // Only reachable when stopping.
                 liveThreads -= 1
-                pg_mutex_unlock(mutex)
+                av_mutex_unlock(mutex)
                 return
             }
             let job = pending.removeFirst()
-            pg_mutex_unlock(mutex)
+            av_mutex_unlock(mutex)
             execute(job)
         }
     }
@@ -373,9 +374,9 @@ public final class WSGIPool {
         // called the application, which is the expensive part. The references
         // it holds are still released below, on this thread and under the GIL,
         // exactly as they would have been.
-        pg_mutex_lock(mutex)
+        av_mutex_lock(mutex)
         let abandoned = job.cancelled
-        pg_mutex_unlock(mutex)
+        av_mutex_unlock(mutex)
 
         let gil = pg_gil_ensure()
         if !abandoned { runApplication(job) }
@@ -392,11 +393,11 @@ public final class WSGIPool {
         }
         pg_gil_release(gil)
 
-        pg_mutex_lock(mutex)
+        av_mutex_lock(mutex)
         job.finished = true
         running -= 1
         if !job.queued { job.queued = true; ready.append(job) }
-        pg_mutex_unlock(mutex)
+        av_mutex_unlock(mutex)
         wake()
     }
 
@@ -662,9 +663,9 @@ public final class WSGIPool {
     /// thread from doing the very work this thread is waiting for -- the
     /// deadlock this whole design exists to avoid.
     private func handoff(_ job: WSGIJob, _ staged: inout ByteBuffer) -> Bool {
-        pg_mutex_lock(mutex)
+        av_mutex_lock(mutex)
         if job.cancelled {
-            pg_mutex_unlock(mutex)
+            av_mutex_unlock(mutex)
             return false
         }
         let n = staged.readableBytes
@@ -675,24 +676,24 @@ public final class WSGIPool {
         let wakeNeeded = !job.queued
         if wakeNeeded { job.queued = true; ready.append(job) }
         let backedUp = job.out.readableBytes > highWaterMark
-        pg_mutex_unlock(mutex)
+        av_mutex_unlock(mutex)
         if wakeNeeded { wake() }
         if !backedUp { return true }
 
         let saved = pg_gil_save()
-        pg_mutex_lock(mutex)
+        av_mutex_lock(mutex)
         while job.out.readableBytes > lowWaterMark && !job.cancelled && !stopping {
-            pg_cond_wait(drainCond, mutex)
+            av_cond_wait(drainCond, mutex)
         }
         let alive = !job.cancelled
-        pg_mutex_unlock(mutex)
+        av_mutex_unlock(mutex)
         pg_gil_restore(saved)
         return alive
     }
 
     private func wake() {
         var byte: UInt8 = 1
-        _ = pg_write(wakeWriteFD, &byte, 1)
+        _ = av_write(wakeWriteFD, &byte, 1)
     }
 }
 

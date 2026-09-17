@@ -94,7 +94,8 @@ class BuildBinaryWheel(build_py):
             scratch = os.environ.get(
                 "PEREGRINE_SCRATCH_PATH", os.path.join(HERE, ".build-dist")
             )
-            command = ["swift", "build", "-c", "release", "--scratch-path", scratch]
+            command = ["swift", "build", "-c", "release", "--scratch-path", scratch,
+                       "-Xswiftc", "-enforce-exclusivity=unchecked"]
             sys.stderr.write("setupdist: %s\n" % " ".join(command))
             result = subprocess.run(command, cwd=HERE)
             if result.returncode != 0:

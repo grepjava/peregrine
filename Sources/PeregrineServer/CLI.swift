@@ -13,8 +13,9 @@ import Glibc
 import Darwin
 #endif
 
+import CAvian
 import CPeregrine
-import PeregrineCore
+import AvianCore
 import PeregrinePython
 
 public enum PeregrineCLI {
@@ -217,7 +218,7 @@ public enum PeregrineCLI {
               peregrine --workers 0 --free-threaded myapp.asgi:app
 
             """
-            _ = pg_write(1, usage.utf8Start, usage.utf8CodeUnitCount)
+            _ = av_write(1, usage.utf8Start, usage.utf8CodeUnitCount)
         }
 
         let version: StaticString = "peregrine 1.1.5"
@@ -263,7 +264,7 @@ public enum PeregrineCLI {
             }
             let newline: StaticString = "\n"
             append(newline.utf8Start, newline.utf8CodeUnitCount)
-            buf.withUnsafeBufferPointer { _ = pg_write(1, $0.baseAddress!, n) }
+            buf.withUnsafeBufferPointer { _ = av_write(1, $0.baseAddress!, n) }
         }
 
         var config = ServerConfig()

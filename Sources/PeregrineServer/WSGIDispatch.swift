@@ -18,9 +18,10 @@
 // so the two produce identical output.
 //===----------------------------------------------------------------------===//
 
+import CAvian
 import CPeregrine
-import PeregrineCore
-import PeregrineHTTP
+import AvianCore
+import AvianHTTP
 import PeregrinePython
 import PeregrineWSGI
 
@@ -385,7 +386,7 @@ extension Worker {
         if c.pointee.capture.active {
             if !limit.mismatched && c.pointee.capture.store(key: c.pointee.cacheKey)
                 && Metrics.enabled {
-                Metrics.add(PG_M_CACHE_STORES)
+                Metrics.add(AV_M_CACHE_STORES)
             }
             c.pointee.capture.abandon()
         }
@@ -701,7 +702,7 @@ extension Worker {
         if job.capture.active {
             if !job.limit.mismatched && job.capture.store(key: c.pointee.cacheKey)
                 && Metrics.enabled {
-                Metrics.add(PG_M_CACHE_STORES)
+                Metrics.add(AV_M_CACHE_STORES)
             }
             job.capture.abandon()
         }

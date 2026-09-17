@@ -49,7 +49,9 @@ fi
 
 # Anything after the script's name goes to swift build, for the flags a platform
 # needs -- on macOS, where Homebrew's OpenSSL is: -Xcc -I... -Xlinker -L...
-swift build -c release --product PeregrineExtension --scratch-path "$SCRATCH" "$@"
+# aviancore cannot set unsafe flags, so its exclusivity checks go off here.
+swift build -c release --product PeregrineExtension --scratch-path "$SCRATCH" \
+    -Xswiftc -enforce-exclusivity=unchecked "$@"
 
 # SwiftPM names the library for the platform; Python wants the interpreter's
 # suffix, which is .so on macOS too.

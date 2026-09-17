@@ -12,11 +12,10 @@
 // instead of touching a recycled slot.
 //===----------------------------------------------------------------------===//
 
-import CPeregrine
-import PeregrineCore
-import PeregrineHTTP
+import AvianCore
+import AvianHTTP
 import PeregrinePython
-import PeregrineQUIC
+import AvianQUIC
 
 public enum ConnState: UInt8 {
     case free

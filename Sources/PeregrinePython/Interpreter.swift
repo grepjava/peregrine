@@ -8,7 +8,7 @@
 //===----------------------------------------------------------------------===//
 
 import CPeregrine
-import PeregrineCore
+import AvianCore
 
 public enum AppProtocol: UInt8, Sendable {
     case wsgi, asgi

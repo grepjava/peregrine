@@ -6,8 +6,12 @@ import PackageDescription
 // Design constraints baked into this manifest:
 //  * No Foundation anywhere. Foundation drags in ARC-heavy bridging types
 //    (NSString, NSData, DispatchQueue) that we cannot afford on the hot path.
-//  * All platform syscalls and every CPython macro live in the C target so the
-//    Swift side never has to import packed structs, unions or varargs.
+//  * Every platform syscall lives in aviancore's C target and every CPython
+//    macro in CPeregrine, so the Swift side never has to import packed
+//    structs, unions or varargs.
+//  * Exclusivity checking is off for Peregrine's own targets in release
+//    builds. aviancore cannot set unsafe flags, so release builds of the
+//    server pass -Xswiftc -enforce-exclusivity=unchecked as well.
 //  * Whole-module optimisation + cross-module optimisation so the many tiny
 //    `@inlinable` byte-pushing helpers actually collapse.
 
@@ -36,12 +40,22 @@ let hosted = (Context.environment["PEREGRINE_EXTENSION"] ?? "0") != "0"
 let pythonPackage = Context.environment["PEREGRINE_PYTHON_PC"]
     ?? (hosted ? "python3" : "python3-embed")
 
+/// A module of aviancore, the protocol and systems layers Peregrine is built on.
+func avian(_ name: String) -> Target.Dependency {
+    .product(name: name, package: "aviancore")
+}
+
 let package = Package(
     name: "peregrine",
     platforms: [.macOS(.v14)],
     products: [
         .executable(name: "peregrine", targets: ["peregrine"]),
         .library(name: "Peregrine", targets: ["PeregrineServer"]),
+    ],
+    dependencies: [
+        // The protocol and systems layers: syscalls, TLS, buffers, the poller,
+        // HTTP/1.1, HTTP/2, HTTP/3 and QUIC.
+        .package(path: "../aviancore"),
     ],
     targets: [
         // libpython, located through `python3-embed.pc` -- or, for the
@@ -57,56 +71,33 @@ let package = Package(
             ]
         ),
 
-        // Syscall wrappers (epoll/kqueue, sockets, sendfile, clock) plus every
-        // CPython construct that is a macro, a union, or variadic.
+        // Every CPython construct that is a macro, a union, or variadic.
         .target(
             name: "CPeregrine",
             dependencies: ["CPython"],
             path: "Sources/CPeregrine",
             cSettings: [
-                // Feature-test macros are set inside the .c files, never here:
-                // a define that reaches the module build would change glibc
-                // struct layouts relative to SwiftGlibc.
                 .headerSearchPath("include"),
-            ],
-            // TLS. OpenSSL supplies the primitives and the handshake; the
-            // protocol state above it is ours. Headers are reached only from
-            // peregrine_tls.c, never from anything Swift imports.
-            linkerSettings: [
-                .linkedLibrary("ssl"),
-                .linkedLibrary("crypto"),
-                // gzip. brotli and zstd are opened at run time instead, so
-                // a machine without them still runs; see peregrine_compress.c.
-                .linkedLibrary("z"),
             ]
         ),
 
-        .target(name: "PeregrineCore", dependencies: ["CPeregrine"],
-                swiftSettings: sharedSwiftSettings),
-
-        .target(name: "PeregrineHTTP", dependencies: ["PeregrineCore"],
-                swiftSettings: sharedSwiftSettings),
-
-        // QUIC and its TLS 1.3 handshake. QUIC replaces the TLS record layer,
-        // so OpenSSL is used here only for primitives -- hash, HKDF, AEAD, key
-        // agreement, signature -- and the protocol above them is ours.
-        .target(name: "PeregrineQUIC", dependencies: ["PeregrineCore", "PeregrineHTTP"],
-                swiftSettings: sharedSwiftSettings),
-
-        .target(name: "PeregrinePython", dependencies: ["CPython", "CPeregrine", "PeregrineCore"],
+        .target(name: "PeregrinePython",
+                dependencies: ["CPython", "CPeregrine", avian("CAvian"), avian("AvianCore")],
                 swiftSettings: sharedSwiftSettings),
 
         .target(name: "PeregrineWSGI",
-                dependencies: ["PeregrineCore", "PeregrineHTTP", "PeregrinePython"],
+                dependencies: ["CPeregrine", avian("CAvian"), avian("AvianCore"), avian("AvianHTTP"),
+                               "PeregrinePython"],
                 swiftSettings: sharedSwiftSettings),
 
         .target(name: "PeregrineASGI",
-                dependencies: ["PeregrineCore", "PeregrineHTTP", "PeregrinePython"],
+                dependencies: ["CPeregrine", avian("CAvian"), avian("AvianCore"), avian("AvianHTTP"),
+                               "PeregrinePython"],
                 swiftSettings: sharedSwiftSettings),
 
         .target(name: "PeregrineServer",
-                dependencies: ["PeregrineCore", "PeregrineHTTP", "PeregrinePython",
-                               "PeregrineWSGI", "PeregrineASGI", "PeregrineQUIC"],
+                dependencies: ["CPeregrine", avian("CAvian"), avian("AvianCore"), avian("AvianHTTP"),
+                               avian("AvianQUIC"), "PeregrinePython", "PeregrineWSGI", "PeregrineASGI"],
                 swiftSettings: sharedSwiftSettings),
 
         .executableTarget(name: "peregrine", dependencies: ["PeregrineServer"],
@@ -116,17 +107,17 @@ let package = Package(
         // that have to survive them. A library rather than part of `pgfuzz`
         // because the test suite replays the same corpus through it.
         .target(name: "PeregrineFuzzTargets",
-                dependencies: ["PeregrineCore", "PeregrineHTTP", "PeregrineQUIC"],
+                dependencies: [avian("AvianCore"), avian("AvianHTTP"), avian("AvianQUIC")],
                 swiftSettings: sharedSwiftSettings),
 
         // Not a product: a development tool, built by `swift build` and run by
         // `swift run pgfuzz`, that nobody has to install.
         .executableTarget(name: "pgfuzz",
-                          dependencies: ["CPeregrine", "PeregrineFuzzTargets"],
+                          dependencies: [avian("CAvian"), "PeregrineFuzzTargets"],
                           swiftSettings: sharedSwiftSettings),
 
         .testTarget(name: "PeregrineTests",
-                    dependencies: ["PeregrineCore", "PeregrineHTTP", "PeregrineQUIC",
+                    dependencies: [avian("AvianCore"), avian("AvianHTTP"), avian("AvianQUIC"),
                                    "PeregrineFuzzTargets"],
                     swiftSettings: [.swiftLanguageMode(.v6)]),
     ],
@@ -143,7 +134,7 @@ if hosted {
     package.targets.removeAll { $0.type == .executable || $0.type == .test }
     package.targets.append(
         .target(name: "PeregrineExtension",
-                dependencies: ["CPeregrine", "PeregrineServer"],
+                dependencies: ["CPeregrine", avian("CAvian"), "PeregrineServer"],
                 swiftSettings: sharedSwiftSettings,
                 // Calls from the server into its own functions bind at link
                 // time, as they do in the executable, instead of going through

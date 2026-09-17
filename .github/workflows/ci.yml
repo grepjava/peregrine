@@ -109,9 +109,7 @@ jobs:
         run: python3 scripts/feature-test.py "$PEREGRINE"
 
       - name: Response cache
-        run: |
-          bash scripts/cache-unit-test.sh
-          bash scripts/cache-test.sh "$PEREGRINE"
+        run: bash scripts/cache-test.sh "$PEREGRINE"
 
       - name: HTTP/2
         run: |
@@ -188,7 +186,7 @@ jobs:
           pkg-config --libs python3-embed
 
       - name: Build
-        run: swift build -c release
+        run: swift build -c release -Xswiftc -enforce-exclusivity=unchecked
 
       - name: Integration tests
         run: bash scripts/integration-test.sh .build/release/peregrine

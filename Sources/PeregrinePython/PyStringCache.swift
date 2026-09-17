@@ -13,7 +13,7 @@
 //===----------------------------------------------------------------------===//
 
 import CPeregrine
-import PeregrineCore
+import AvianCore
 
 public struct PyStringCache {
     @usableFromInline

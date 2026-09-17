@@ -18,7 +18,7 @@
 //===----------------------------------------------------------------------===//
 
 import CPeregrine
-import PeregrineCore
+import AvianCore
 import PeregrinePython
 
 extension Peregrine {

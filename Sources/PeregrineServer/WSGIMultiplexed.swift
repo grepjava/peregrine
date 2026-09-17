@@ -23,11 +23,10 @@
 // DATA frames whatever produced them.
 //===----------------------------------------------------------------------===//
 
-import CPeregrine
-import PeregrineCore
-import PeregrineHTTP
+import AvianCore
+import AvianHTTP
 import PeregrinePython
-import PeregrineQUIC
+import AvianQUIC
 
 extension Worker {
 

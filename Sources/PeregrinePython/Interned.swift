@@ -13,7 +13,7 @@
 //===----------------------------------------------------------------------===//
 
 import CPeregrine
-import PeregrineCore
+import AvianCore
 
 public enum PyKey: Int, CaseIterable {
     // --- WSGI environ keys ---
@@ -175,7 +175,7 @@ public enum Interned {
     }
 }
 
-/// Mirrors `PeregrineHTTP.HTTPMethod` without creating a dependency from the
+/// Mirrors `AvianHTTP.HTTPMethod` without creating a dependency from the
 /// Python layer onto the HTTP layer.
 public enum HTTPMethodCode: UInt8, Sendable {
     case get, head, post, put, delete, patch, options, connect, trace, other

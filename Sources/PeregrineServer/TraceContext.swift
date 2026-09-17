@@ -11,15 +11,14 @@
 // span that nothing ever recorded, and a trace backend would show the
 // application's spans hanging from a gap.
 //
-// What counts as a readable traceparent is PeregrineHTTP's TraceContext. On
+// What counts as a readable traceparent is AvianHTTP's TraceContext. On
 // top of that, a request carrying more than one is ignored: two traceparents
 // disagree about which trace this is, and the specification has a receiver
 // trust neither.
 //===----------------------------------------------------------------------===//
 
-import CPeregrine
-import PeregrineCore
-import PeregrineHTTP
+import AvianCore
+import AvianHTTP
 
 extension Worker {
 

@@ -479,7 +479,9 @@ class BuildWithSwift(build_py):
         default_scratch = ".build-install" if mode == "binary" else ".build-install-extension"
         scratch = os.environ.get("PEREGRINE_SCRATCH_PATH",
                                  os.path.join(HERE, default_scratch))
-        command = ["swift", "build", "-c", "release", "--scratch-path", scratch]
+        # aviancore cannot set unsafe flags, so its exclusivity checks go off here.
+        command = ["swift", "build", "-c", "release", "--scratch-path", scratch,
+                   "-Xswiftc", "-enforce-exclusivity=unchecked"]
         if mode == "extension":
             command += ["--product", EXTENSION_PRODUCT]
         sys.stderr.write("peregrine: %s%s\n"

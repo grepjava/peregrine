@@ -19,8 +19,8 @@
 //===----------------------------------------------------------------------===//
 
 import CPeregrine
-import PeregrineCore
-import PeregrineHTTP
+import AvianCore
+import AvianHTTP
 import PeregrinePython
 import PeregrineWSGI
 

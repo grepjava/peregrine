@@ -121,7 +121,7 @@ instead. It is for working on Peregrine itself; the extension module is what
 installing from source, and the Dockerfile, give you:
 
 ```bash
-swift build -c release                # binary at .build/release/peregrine
+swift build -c release -Xswiftc -enforce-exclusivity=unchecked   # .build/release/peregrine
 .build/release/peregrine --python-path examples --python-path python \
     --port 8000 asgi_app:app
 ```
@@ -135,7 +135,7 @@ If the checkout lives on a filesystem the toolchain is slow on — a Windows
 drive mounted into WSL, for instance — build somewhere native instead:
 
 ```bash
-swift build -c release --scratch-path ~/pgbuild
+swift build -c release -Xswiftc -enforce-exclusivity=unchecked --scratch-path ~/pgbuild
 SCRATCH=~/pgbuild-ext bash scripts/build-extension.sh
 ```
 
@@ -291,12 +291,12 @@ installs, so build the extension module first:
 bash scripts/build-extension.sh                 # the server under test
 S=scripts/peregrine-ext
 
-swift test                                      # 150 unit tests
-bash scripts/integration-test.sh $S             #  56 end-to-end checks
-python3 scripts/feature-test.py $S              # 196 failure-mode checks
+swift test                                      # the fuzz corpus
+bash scripts/integration-test.sh $S             #  62 end-to-end checks
+python3 scripts/feature-test.py $S              # 225 failure-mode checks
 bash scripts/framework-test.sh $S               # against real FastAPI and
                                                 #   Flask applications
-<venv>/bin/python scripts/http2-test.py $S      # 162 against `h2`
+<venv>/bin/python scripts/http2-test.py $S      # 182 against `h2`
 <venv>/bin/python scripts/http3-test.py $S      # 114 against `aioquic`
 python3 scripts/contrib_test.py                 #  58 Python-only
 <venv>/bin/python scripts/webtransport-test.py $S  # FastAPI over HTTP/3

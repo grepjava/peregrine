@@ -21,15 +21,26 @@ executable, and framework code runs 10-15 % faster there than in the shared
 
 The protocols themselves are in [TRANSPORT.md](TRANSPORT.md).
 
+The protocol and systems layers come from
+[aviancore](https://github.com/grepjava/aviancore), a package Peregrine shares
+with [Garuda](https://github.com/grepjava/garuda):
+
+```
+aviancore
+  CAvian             C shim: epoll/kqueue, sockets, signals, threads, TLS,
+                     crypto, UDP, compression, shared-memory tables
+  AvianCore          buffers, buffer pool, poller, logging, date cache
+  AvianHTTP          HTTP/1.1 parser, chunked decoder, response writer,
+                     HPACK, QPACK, HTTP/2 and HTTP/3 framing
+  AvianQUIC          QUIC transport and the TLS 1.3 handshake it needs
+```
+
+The rest is in this repository:
+
 ```
 Sources/
-  CPeregrine/        C shim: epoll/kqueue, sockets, signals, TLS, crypto,
-                     UDP, and the CPython macros Swift cannot import
-  PeregrineCore/     buffers, buffer pool, poller, logging, date cache
-  PeregrineHTTP/     HTTP/1.1 parser, chunked decoder, response writer,
-                     HPACK, QPACK, HTTP/2 and HTTP/3 framing
+  CPeregrine/        the CPython macros Swift cannot import
   PeregrinePython/   PyRef, interned constants, custom Python types
-  PeregrineQUIC/     QUIC transport and the TLS 1.3 handshake it needs
   PeregrineWSGI/     environ building, wsgi.input, start_response
   PeregrineASGI/     scope and message building
   PeregrineServer/   connection table, worker loop, both dispatchers,
@@ -40,9 +51,9 @@ Sources/
 ```
 
 `Python.h`, `openssl/ssl.h` and `openssl/evp.h` never appear in a header Swift
-imports. Everything they offer arrives through opaque functions in the shim,
-which is what keeps the Swift side free of the macro soup and the C++-ish
-declarations those headers contain.
+imports. Everything they offer arrives through opaque functions in CAvian and
+CPeregrine, which is what keeps the Swift side free of the macro soup and the
+C++-ish declarations those headers contain.
 
 ---
 

@@ -55,10 +55,10 @@
 
 import CPeregrine
 import PeregrineASGI
-import PeregrineCore
-import PeregrineHTTP
+import AvianCore
+import AvianHTTP
 import PeregrinePython
-import PeregrineQUIC
+import AvianQUIC
 
 /// One stream belonging to a session.
 public final class WTStream {

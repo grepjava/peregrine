@@ -28,7 +28,7 @@
 //===----------------------------------------------------------------------===//
 
 import CPeregrine
-import PeregrineCore
+import AvianCore
 import PeregrinePython
 
 /// Where the bytes handed to the legacy `write()` callable go.

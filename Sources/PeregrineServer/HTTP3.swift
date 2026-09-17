@@ -22,11 +22,12 @@
 // introduced -- and its bytes are dropped rather than parsed.
 //===----------------------------------------------------------------------===//
 
+import CAvian
 import CPeregrine
-import PeregrineCore
-import PeregrineHTTP
+import AvianCore
+import AvianHTTP
 import PeregrinePython
-import PeregrineQUIC
+import AvianQUIC
 
 /// Per-connection HTTP/3 state, on the slot that owns the QUIC connection.
 public final class H3Connection {
@@ -112,7 +113,7 @@ extension Worker {
         c.pointee.state = .http3
         c.pointee.interest = 0
         c.pointee.flags = []
-        c.pointee.lastActivity = pg_monotonic_ms()
+        c.pointee.lastActivity = av_monotonic_ms()
         let h3 = H3Connection(quic: connection,
                               resetBudget: max(100, config.h2MaxConcurrentStreams * 2))
         c.pointee.h3 = h3
@@ -125,7 +126,7 @@ extension Worker {
         var port: UInt16 = 0
         var peer = connection.peerAddress
         _ = host.withUnsafeMutableBufferPointer {
-            pg_udp_addr_text(&peer, $0.baseAddress, 64, &port)
+            av_udp_addr_text(&peer, $0.baseAddress, 64, &port)
         }
         host.withUnsafeBufferPointer { buffer in
             guard let base = buffer.baseAddress else { return }
@@ -209,7 +210,7 @@ extension Worker {
         let slot = Int(connection.applicationSlot)
         guard slot >= 0, table[slot].pointee.state == .http3,
               let h3 = table[slot].pointee.h3 else { return }
-        table[slot].pointee.lastActivity = pg_monotonic_ms()
+        table[slot].pointee.lastActivity = av_monotonic_ms()
 
         // A stream that belongs to a WebTransport session is not HTTP/3 at
         // all past its prefix: no frames, no QPACK, just bytes.
@@ -663,7 +664,7 @@ extension Worker {
         // Body bytes are what progress looks like on a stream slot, which has
         // no descriptor and so never sees a poller event. See the same note in
         // HTTP2.handleDataFrame.
-        s.pointee.lastActivity = pg_monotonic_ms()
+        s.pointee.lastActivity = av_monotonic_ms()
         s.pointee.bodyReceived += n
         if s.pointee.head.flags.contains(.hasContentLength)
             && s.pointee.bodyReceived > s.pointee.head.contentLength {
@@ -761,7 +762,7 @@ extension Worker {
         s.pointee.bodyRemaining = -1
         s.pointee.bodyReceived = 0
         s.pointee.requestCount = 1
-        s.pointee.lastActivity = pg_monotonic_ms()
+        s.pointee.lastActivity = av_monotonic_ms()
         s.pointee.task = nil
         s.pointee.pendingReceive = nil
         s.pointee.sendCallable = nil
@@ -776,7 +777,7 @@ extension Worker {
         s.pointee.fileFD = -1
         s.pointee.fileOffset = 0
         s.pointee.fileRemaining = 0
-        s.pointee.headStartUs = config.requestStartHeader ? pg_realtime_us() : 0
+        s.pointee.headStartUs = config.requestStartHeader ? av_realtime_us() : 0
         s.pointee.h3FrameType = 0
         s.pointee.h3FrameRemaining = 0
         s.pointee.clientTuple = nil
@@ -946,6 +947,6 @@ extension Worker {
     /// Pushes whatever the connection now has to send.
     mutating func flushQUIC(_ slot: Int) {
         guard let connection = table[slot].pointee.quicRef, let quic else { return }
-        quic.flushOne(connection, nowMs: pg_monotonic_ms())
+        quic.flushOne(connection, nowMs: av_monotonic_ms())
     }
 }

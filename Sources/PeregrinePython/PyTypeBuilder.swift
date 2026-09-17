@@ -12,7 +12,7 @@
 //===----------------------------------------------------------------------===//
 
 import CPeregrine
-import PeregrineCore
+import AvianCore
 
 public enum PySlotKind: Int32 {
     case dealloc = 1

@@ -22,10 +22,11 @@
 // of resumption bug from the mask/validation state machine.
 //===----------------------------------------------------------------------===//
 
+import CAvian
 import CPeregrine
 import PeregrineASGI
-import PeregrineCore
-import PeregrineHTTP
+import AvianCore
+import AvianHTTP
 import PeregrinePython
 
 /// Per-connection WebSocket state. Trivial and default-constructible, because
@@ -201,9 +202,9 @@ extension Worker {
             memcpy(p, key.base, n)
             memcpy(p + n, wsGUID.utf8Start, 36)
             withUnsafeTemporaryAllocation(of: UInt8.self, capacity: 20) { digest in
-                pg_sha1(p, n + 36, digest.baseAddress!)
+                av_sha1(p, n + 36, digest.baseAddress!)
                 _ = out.withMemoryRebound(to: CChar.self, capacity: 28) { o in
-                    pg_base64(digest.baseAddress!, 20, o)
+                    av_base64(digest.baseAddress!, 20, o)
                 }
             }
         }
@@ -228,7 +229,7 @@ extension Worker {
         dates.refresh()
         c.pointee.write.clear()
         HTTPResponseWriter.writeError(&c.pointee.write, status: status,
-                                      closeConnection: true, dateCache: dates)
+                                      closeConnection: true, dateCache: dates, serverName: "peregrine")
         c.pointee.flags.insert(.responseStarted)
         c.pointee.flags.insert(.responseComplete)
         c.pointee.state = .writing
@@ -552,7 +553,7 @@ extension Worker {
         let c = table[slot]
         guard let agreement = c.pointee.ws.deflate else { return WSCloseCode.protocolError }
         if c.pointee.ws.inflater == nil {
-            c.pointee.ws.inflater = pg_ws_inflate_new(agreement.inflateWindowBits)
+            c.pointee.ws.inflater = av_ws_inflate_new(agreement.inflateWindowBits)
         }
         guard let z = c.pointee.ws.inflater else { return WSCloseCode.internalError }
 
@@ -573,7 +574,7 @@ extension Worker {
             let room = min(out.writableBytes, limit + 1 - out.readableBytes)
             var consumed = 0
             var produced = 0
-            let rc = pg_ws_inflate_run(z, input, remaining, out.writePointer, room,
+            let rc = av_ws_inflate_run(z, input, remaining, out.writePointer, room,
                                        &consumed, &produced)
             input += consumed
             remaining -= consumed
@@ -590,7 +591,7 @@ extension Worker {
             if consumed == 0 && produced == 0 && rc == 0 { return WSCloseCode.invalidPayload }
         }
         if ended || agreement.clientNoContextTakeover {
-            if pg_ws_inflate_reset(z) != 0 { return WSCloseCode.internalError }
+            if av_ws_inflate_reset(z) != 0 { return WSCloseCode.internalError }
         }
         return 0
     }
@@ -798,7 +799,7 @@ extension Worker {
         c.pointee.ws.accepted = true
         c.pointee.state = .websocket
         c.pointee.ws.pingSentAt = 0
-        c.pointee.lastActivity = pg_monotonic_ms()
+        c.pointee.lastActivity = av_monotonic_ms()
         logAccess(slot, status: 101)
         _ = flush(slot)
         if table[slot].pointee.state == .free { return true }
@@ -836,7 +837,7 @@ extension Worker {
 
         if let agreement = c.pointee.ws.deflate, view.count >= WSDeflate.minimumMessage {
             if c.pointee.ws.deflater == nil {
-                c.pointee.ws.deflater = pg_ws_deflate_new(agreement.deflateWindowBits,
+                c.pointee.ws.deflater = av_ws_deflate_new(agreement.deflateWindowBits,
                                                           WSDeflate.memoryLevel)
             }
             // Without a compressor the message simply goes out as it is: the
@@ -850,7 +851,7 @@ extension Worker {
                                               payload: UnsafePointer(compressed.readPointer),
                                               length: compressed.readableBytes)
                     c.pointee.write = out
-                    if agreement.serverNoContextTakeover { _ = pg_ws_deflate_reset(z) }
+                    if agreement.serverNoContextTakeover { _ = av_ws_deflate_reset(z) }
                     _ = flush(slot)
                     return true
                 }
@@ -881,7 +882,7 @@ extension Worker {
             out.reserve(max(1024, remaining / 2 + 64))
             var consumed = 0
             var produced = 0
-            let rc = pg_ws_deflate_run(z, input, remaining, out.writePointer, out.writableBytes,
+            let rc = av_ws_deflate_run(z, input, remaining, out.writePointer, out.writableBytes,
                                        &consumed, &produced)
             input += consumed
             remaining -= consumed

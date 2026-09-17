@@ -57,9 +57,10 @@
 // middle of serving a request.
 //===----------------------------------------------------------------------===//
 
+import CAvian
 import CPeregrine
 import PeregrineASGI
-import PeregrineCore
+import AvianCore
 import PeregrinePython
 import PeregrineWSGI
 
@@ -84,16 +85,16 @@ final class WorkerGroup {
     var members: [WorkerThread] = []
 
     init?(count: Int) {
-        guard let m = pg_mutex_new() else { return nil }
-        guard let s = pg_mutex_new() else { pg_mutex_free(m); return nil }
+        guard let m = av_mutex_new() else { return nil }
+        guard let s = av_mutex_new() else { av_mutex_free(m); return nil }
         self.mutex = m
         self.startupMutex = s
         self.count = count
     }
 
     deinit {
-        pg_mutex_free(mutex)
-        pg_mutex_free(startupMutex)
+        av_mutex_free(mutex)
+        av_mutex_free(startupMutex)
     }
 
     /// Runs one worker's lifespan startup with no other worker inside its own.
@@ -111,48 +112,48 @@ final class WorkerGroup {
     /// ever.
     func withStartupLock<T>(_ body: () -> T) -> T {
         let saved = pg_gil_save()
-        pg_mutex_lock(startupMutex)
+        av_mutex_lock(startupMutex)
         pg_gil_restore(saved)
-        defer { pg_mutex_unlock(startupMutex) }
+        defer { av_mutex_unlock(startupMutex) }
         return body()
     }
 
     /// Every worker has either started serving or given up trying.
     var settled: Bool {
-        pg_mutex_lock(mutex)
-        defer { pg_mutex_unlock(mutex) }
+        av_mutex_lock(mutex)
+        defer { av_mutex_unlock(mutex) }
         return readyCount + failedCount >= count
     }
 
     var failed: Int {
-        pg_mutex_lock(mutex)
-        defer { pg_mutex_unlock(mutex) }
+        av_mutex_lock(mutex)
+        defer { av_mutex_unlock(mutex) }
         return failedCount
     }
 
     /// Every worker thread has returned from its loop.
     var allDone: Bool {
-        pg_mutex_lock(mutex)
-        defer { pg_mutex_unlock(mutex) }
+        av_mutex_lock(mutex)
+        defer { av_mutex_unlock(mutex) }
         return doneCount + failedCount >= count
     }
 
     func markReady() {
-        pg_mutex_lock(mutex)
+        av_mutex_lock(mutex)
         readyCount += 1
-        pg_mutex_unlock(mutex)
+        av_mutex_unlock(mutex)
     }
 
     func markFailed() {
-        pg_mutex_lock(mutex)
+        av_mutex_lock(mutex)
         failedCount += 1
-        pg_mutex_unlock(mutex)
+        av_mutex_unlock(mutex)
     }
 
     func markDone() {
-        pg_mutex_lock(mutex)
+        av_mutex_lock(mutex)
         doneCount += 1
-        pg_mutex_unlock(mutex)
+        av_mutex_unlock(mutex)
     }
 
     /// Asks every worker to drain, by putting a signal number down the pipe it
@@ -192,7 +193,7 @@ final class WorkerThread {
           listenFD: Int32, group: WorkerGroup, metricsSlot: Int) {
         var fds: (Int32, Int32) = (-1, -1)
         let rc = withUnsafeMutableBytes(of: &fds) { raw in
-            pg_pipe(raw.baseAddress!.assumingMemoryBound(to: Int32.self))
+            av_pipe(raw.baseAddress!.assumingMemoryBound(to: Int32.self))
         }
         if rc != 0 {
             Log.error("cannot create the worker control pipe")
@@ -210,7 +211,7 @@ final class WorkerThread {
 
     func start() -> Bool {
         let arg = Unmanaged.passUnretained(self).toOpaque()
-        guard let h = pg_thread_start(workerThreadEntry, arg) else {
+        guard let h = av_thread_start(workerThreadEntry, arg) else {
             Log.error("cannot start a worker thread")
             return false
         }
@@ -221,14 +222,14 @@ final class WorkerThread {
     func requestDrain(signal: Int32) {
         var byte = UInt8(signal)
         _ = withUnsafeBytes(of: &byte) { raw in
-            pg_write(controlWrite, raw.baseAddress!, 1)
+            av_write(controlWrite, raw.baseAddress!, 1)
         }
     }
 
     func join() {
         guard let h = handle else { return }
         handle = nil
-        pg_thread_join(h)
+        av_thread_join(h)
     }
 
     /// The body of the thread. Everything here is this thread's own.
@@ -362,7 +363,7 @@ final class ThreadSupervisor {
         var buf = (UInt8(0), UInt8(0), UInt8(0), UInt8(0), UInt8(0), UInt8(0), UInt8(0), UInt8(0))
         while true {
             let n = withUnsafeMutableBytes(of: &buf) { raw in
-                pg_read(signalFD, raw.baseAddress!, 8)
+                av_read(signalFD, raw.baseAddress!, 8)
             }
             if n <= 0 { break }
             withUnsafeBytes(of: &buf) { raw in
@@ -385,7 +386,7 @@ final class ThreadSupervisor {
     /// drains now, and cuts short a delay already running.
     func beginShutdown(signal: Int32) {
         let delay = signal == SIGTERM ? config.drainDelayMs : 0
-        let newDeadline = pg_monotonic_ms() &+ delay &+ config.gracefulShutdownMs &+ 2_000
+        let newDeadline = av_monotonic_ms() &+ delay &+ config.gracefulShutdownMs &+ 2_000
         if shuttingDown {
             // Only a request to stop sooner changes anything.
             guard deadline > newDeadline else { return }
@@ -401,14 +402,14 @@ final class ThreadSupervisor {
         // The margin has to cover the delay, the drain, the join, the lifespan
         // shutdown and interpreter finalisation.
         let margin = (delay &+ config.gracefulShutdownMs) / 1000 &+ 15
-        pg_exit_after(UInt32(truncatingIfNeeded: margin), 0)
+        av_exit_after(UInt32(truncatingIfNeeded: margin), 0)
     }
 
     /// True once there is nothing left to wait for.
     var finished: Bool {
         guard shuttingDown else { return false }
         if group.allDone { return true }
-        if deadline > 0 && pg_monotonic_ms() > deadline {
+        if deadline > 0 && av_monotonic_ms() > deadline {
             Log.warn("worker threads did not drain within the grace period")
             return true
         }
@@ -566,7 +567,7 @@ extension Peregrine {
         // The signal pipe belongs to this thread. Worker threads are started
         // with every signal blocked, so a signal cannot be delivered on top of a
         // request being served.
-        let signalFD = pg_signal_pipe_init()
+        let signalFD = av_signal_pipe_init()
         let supervisor = ThreadSupervisor(group: group, config: config, signalFD: signalFD)
         supervisor.loop = mainLoop
         supervisor.lifespan = lifespan
@@ -586,7 +587,7 @@ extension Peregrine {
         // silently came up with fewer workers than it was asked for.
         while !group.settled {
             let saved = pg_gil_save()
-            _ = pg_poll_single(signalFD, 0, 10)
+            _ = av_poll_single(signalFD, 0, 10)
             pg_gil_restore(saved)
         }
         if group.failed > 0 {
@@ -658,7 +659,7 @@ extension Peregrine {
     private static func superviseSynchronously(_ supervisor: ThreadSupervisor) {
         while !supervisor.finished {
             let saved = pg_gil_save()
-            let ready = pg_poll_single(supervisor.signalFD, 0, 100)
+            let ready = av_poll_single(supervisor.signalFD, 0, 100)
             pg_gil_restore(saved)
             if ready > 0 { supervisor.readSignals() }
             // A worker that stops on its own -- every one of them failing to

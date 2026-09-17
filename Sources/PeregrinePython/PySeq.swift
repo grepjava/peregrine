@@ -15,7 +15,7 @@
 //===----------------------------------------------------------------------===//
 
 import CPeregrine
-import PeregrineCore
+import AvianCore
 
 /// list or tuple, read positionally. Anything else is rejected by `isSequence`
 /// rather than silently mis-sized -- `pg_tuple_size` on a non-tuple is

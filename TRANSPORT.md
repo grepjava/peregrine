@@ -293,7 +293,7 @@ On Linux, full-size datagrams to the same client go out in runs of up to 32
 per `sendmsg`, using UDP GSO (`UDP_SEGMENT`), so a burst costs one syscall
 instead of one per datagram. If the kernel or the network device refuses
 segmentation, the worker falls back to one datagram per call for the rest
-of its life. `PEREGRINE_UDP_GSO=0` forces that fallback, for comparison or
+of its life. `AVIAN_UDP_GSO=0` forces that fallback, for comparison or
 for a path that misbehaves with it.
 
 ### Alt-Svc

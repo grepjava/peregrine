@@ -9,9 +9,9 @@
 // every connection put out what it owes.
 //===----------------------------------------------------------------------===//
 
-import CPeregrine
-import PeregrineCore
-import PeregrineQUIC
+import CAvian
+import AvianCore
+import AvianQUIC
 
 extension Worker {
     public mutating func registerQUIC() -> Bool {
@@ -28,7 +28,7 @@ extension Worker {
     /// worker serving QUIC cannot sleep for the usual interval.
     public func quicPollTimeout(_ base: Int32) -> Int32 {
         guard let quic else { return base }
-        let now = pg_monotonic_ms()
+        let now = av_monotonic_ms()
         guard let at = quic.nextTimeout(nowMs: now) else { return base }
         if at <= now { return 0 }
         let wait = at - now
@@ -37,7 +37,7 @@ extension Worker {
 
     mutating func handleQUICEvent(_ mask: PollMask) {
         guard let quic else { return }
-        let now = pg_monotonic_ms()
+        let now = av_monotonic_ms()
         if mask.wantsRead { quic.readable(nowMs: now) }
         serviceQUIC(nowMs: now)
     }
@@ -63,7 +63,7 @@ extension Worker {
     /// cannot wait that long.
     mutating func quicTick() {
         guard let quic else { return }
-        let now = pg_monotonic_ms()
+        let now = av_monotonic_ms()
         // Fine enough for an acknowledgement deadline, coarse enough that an
         // idle worker is not walking its connection list per millisecond.
         if now &- lastQUICTick < 4 && !quic.blocked { return }

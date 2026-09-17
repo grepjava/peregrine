@@ -20,7 +20,7 @@
 //===----------------------------------------------------------------------===//
 
 import CPeregrine
-import PeregrineCore
+import AvianCore
 
 /// CPython exposes `PyObject` as an incomplete type, so Swift imports pointers
 /// to it as `OpaquePointer`.

@@ -15,9 +15,10 @@
 // is the better one.
 //===----------------------------------------------------------------------===//
 
+import CAvian
 import CPeregrine
-import PeregrineCore
-import PeregrineHTTP
+import AvianCore
+import AvianHTTP
 import PeregrinePython
 
 extension Worker {
@@ -42,7 +43,7 @@ extension Worker {
         // Wall-clock already: the agent reading this compares it with its own
         // clock, and on plaintext it came from the kernel's receive timestamp.
         let started = c.pointee.headStartUs
-        let at = started > 0 ? started : pg_realtime_us()
+        let at = started > 0 ? started : av_realtime_us()
         out.write("t=")
         out.writeDecimal(Int(at))
         return true

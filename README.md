@@ -499,13 +499,10 @@ code, because a test written against the same understanding as the code proves
 only that the understanding is consistent.
 
 ```bash
-swift test                                      # 150 unit tests: parser,
-                                                #   chunking, buffers, writer,
-                                                #   websocket framing, HPACK,
-                                                #   QUIC packet protection,
-                                                #   and the fuzz corpus
-bash scripts/integration-test.sh                #  56 end-to-end checks
-python3 scripts/feature-test.py                 # 196 checks for the failure
+swift test                                      # the fuzz corpus, replayed
+                                                #   through every parser
+bash scripts/integration-test.sh                #  62 end-to-end checks
+python3 scripts/feature-test.py                 # 225 checks for the failure
                                                 #   modes a plain request never
                                                 #   reaches: slow consumers,
                                                 #   stuck-request shutdown,
@@ -514,7 +511,7 @@ python3 scripts/feature-test.py                 # 196 checks for the failure
 bash scripts/framework-test.sh                  # checks against real FastAPI
                                                 #   and Flask applications,
                                                 #   over HTTP/1.1 and HTTP/2
-<venv>/bin/python scripts/http2-test.py         # 162 checks against `h2`
+<venv>/bin/python scripts/http2-test.py         # 182 checks against `h2`
 <venv>/bin/python scripts/http3-test.py         # 114 checks against `aioquic`
 python3 scripts/contrib_test.py                 #  58 Python-only: routing,
                                                 #   converters, session helper
@@ -540,8 +537,11 @@ peregrine --port 8443 --tls-cert cert.pem --tls-key key.pem examples.asgi_app:ap
 h2spec -h 127.0.0.1 -p 8443 -t -k    # 146 tests, 146 passed
 ```
 
-QUIC packet protection is checked against RFC 9001 appendix A directly: the key
-schedule, the header protection and the sample packets are the RFC's own bytes.
+The parsers, framing, HPACK, QPACK and QUIC have their unit tests in
+[aviancore](https://github.com/grepjava/aviancore), where that code lives.
+QUIC packet protection is checked there against RFC 9001 appendix A directly:
+the key schedule, the header protection and the sample packets are the RFC's
+own bytes.
 
 ---
 

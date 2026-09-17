@@ -12,7 +12,7 @@
 //===----------------------------------------------------------------------===//
 
 import CPeregrine
-import PeregrineCore
+import AvianCore
 
 public enum PyTrampoline {
     /// `(context, tag, argsTuple) -> result`. Returning nil with a Python error

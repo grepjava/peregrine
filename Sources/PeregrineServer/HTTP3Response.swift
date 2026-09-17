@@ -8,11 +8,12 @@
 // as a stream that will not take any more bytes right now.
 //===----------------------------------------------------------------------===//
 
+import CAvian
 import CPeregrine
-import PeregrineCore
-import PeregrineHTTP
+import AvianCore
+import AvianHTTP
 import PeregrinePython
-import PeregrineQUIC
+import AvianQUIC
 
 nonisolated(unsafe) let emptyH3Byte = UnsafePointer<UInt8>(
     UnsafeMutablePointer<UInt8>.allocate(capacity: 1))
@@ -252,7 +253,7 @@ extension Worker {
             // A stream slot is refreshed by the bytes that move on it, not by
             // a poller event: it has no descriptor to have one. See the same
             // note in HTTP2.flushStream.
-            s.pointee.lastActivity = pg_monotonic_ms()
+            s.pointee.lastActivity = av_monotonic_ms()
             s.pointee.write.consume(pending)
             sentHere += pending
             if s.pointee.fileRemaining == 0 || sentHere >= config.writeHighWaterMark { break }

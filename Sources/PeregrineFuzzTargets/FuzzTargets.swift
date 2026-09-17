@@ -26,9 +26,9 @@
 // from coming back.
 //===----------------------------------------------------------------------===//
 
-import PeregrineCore
-import PeregrineHTTP
-import PeregrineQUIC
+import AvianCore
+import AvianHTTP
+import AvianQUIC
 
 public enum FuzzTarget: String, CaseIterable, Sendable {
     case httpHead = "http-head"

@@ -17,8 +17,8 @@
 //===----------------------------------------------------------------------===//
 
 import CPeregrine
-import PeregrineCore
-import PeregrineHTTP
+import AvianCore
+import AvianHTTP
 import PeregrinePython
 
 /// Deliberately a plain (copyable) struct with an explicit `destroy()` rather
