@@ -660,6 +660,9 @@ def test_multiworker_unix():
         # shared or not; only continuous traffic distinguishes a shared
         # listener from four workers that replaced each other's socket.
         import threading
+        # Under --free-threaded the workers are threads of one process, so
+        # they share a pid and only the thread identity tells them apart.
+        who = "/threadid" if "--free-threaded" in EXTRA else "/pid"
         pids = {}
         lock = threading.Lock()
         stop = [False]
@@ -667,7 +670,7 @@ def test_multiworker_unix():
         def hammer():
             while not stop[0]:
                 try:
-                    status, _, body = server.get("/pid", timeout=5)
+                    status, _, body = server.get(who, timeout=5)
                 except OSError:
                     continue
                 if status == 200:
