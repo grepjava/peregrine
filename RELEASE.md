@@ -20,6 +20,12 @@ version reached PyPI, in UTC.
 
 ## Unreleased
 
+### Fixed
+
+- WebSocket: close code 1004, which RFC 6455 reserves, was accepted. A client
+  close frame carrying it now fails the connection with 1002, and an
+  application closing with it sends 1000 instead (aviancore 0.1.1).
+
 ---
 
 ## 1.1.6 — 2026-09-17
