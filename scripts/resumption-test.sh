@@ -64,16 +64,24 @@ req() { printf 'GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n';
 # in bytes:
 #
 #                            BoringSSL      OpenSSL
-#     request + ign_eof         1628          1669
-#     request, no ign_eof          0             0
-#     no request + ign_eof      1628          1669
-#     no request, no ign_eof       0             0
+#     request + ign_eof        1628 B        1669 B
+#     request, no ign_eof      no file       no file
+#     no request + ign_eof     1628 B        1669 B
+#     no request, no ign_eof   no file       no file
 #
 # The request changes nothing. Without `-ign_eof`, s_client tears the
 # connection down on stdin EOF before it reads a ticket, under either library,
 # and every check here fails. So do not remove `-ign_eof` from save_session.
 # The request is kept because it makes the connection a realistic one and
 # costs nothing, not because anything depends on it.
+#
+# "no file" is literal and the distinction matters: those cells write no
+# session file at all, and `s_client` still exits 0. A probe that reports the
+# size with `stat ... || echo 0` turns that into "0 bytes", which reads as a
+# server that issued an empty ticket -- a different finding wearing the same
+# digit. An earlier version of this table said 0 for exactly that reason. Make
+# a harness say "did not measure" in words that cannot be mistaken for a
+# measurement.
 #
 # Note what this does NOT measure. BoringSSL really does hold its
 # NewSessionTicket until the first application write -- that is aviancore's

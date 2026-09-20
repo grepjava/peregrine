@@ -56,6 +56,10 @@ version reached PyPI, in UTC.
     release**, because the copy is compiled into the wheel rather than taken
     from the system. [DEPLOY.md](DEPLOY.md) records how that is signalled, and
     that no automated advisory feed exists.
+  - **The wheels carry it, so they are larger**: 10.5 MB against 1.1.5's
+    5.9 MB on x86_64. The sdist is unchanged at 1.7 MB, because it fetches
+    aviancore at build time rather than carrying it; what grew there is the
+    build, from 51 s to 96 s at the same 411 MB peak.
 
 - `--ktls` is accepted and ignored. BoringSSL has no kernel TLS, so every
   build encrypts in the process; the flag still parses and still says so at

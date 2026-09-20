@@ -83,14 +83,19 @@ If PyPI has a wheel for this interpreter and platform, `pip` installs it in
 seconds and Swift is not required. Otherwise it falls back to the sdist, the
 Swift build runs, and that takes a few minutes.
 
-**The source build got longer in 1.1.7.** TLS is built against BoringSSL now,
-which aviancore vendors, so `pip` compiles a copy of it as well — 645 more
-files and 276 C++ translation units, fetched by the Swift package manager
-rather than carried in the sdist, which is still 1.7 MB. Measured on a 4-CPU
-machine, a clean install with no caches went from **51 s to 96 s**. Peak memory
-did not move: **411 MB either way**, so a machine that could build 1.1.6 can
-build this. Fewer cores scale it roughly as you would expect; the wheel path is
-unaffected, and on a small VPS it is the one worth preferring.
+**Both paths got heavier in 1.1.7**, because TLS is built against BoringSSL
+now and aviancore vendors a copy of it.
+
+*Wheels* carry that copy, so they are about **10.5 MB against 1.1.5's 5.9 MB**
+on x86_64. Nothing else changes: still one file, still no Swift required.
+
+*The sdist* is still **1.7 MB** — it fetches aviancore at build time rather
+than carrying it — but `pip` now compiles 645 more files and 276 C++
+translation units. Measured on a 4-CPU machine, a clean install with no caches
+went from **51 s to 96 s**. Peak memory did not move: **411 MB either way**, so
+a machine that could build 1.1.6 can build this. Fewer cores scale the time
+roughly as you would expect, which is why the wheel is the one to prefer on a
+small VPS.
 
 The wheels cover CPython 3.11, 3.12, 3.13, 3.14 and free-threaded 3.14t, on
 Linux x86_64 and aarch64 with glibc 2.35 or newer (`manylinux_2_35`): Debian 12,
