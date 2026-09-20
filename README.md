@@ -323,8 +323,8 @@ peregrine [options] MODULE:ATTRIBUTE
                            is the default and the rest are chosen by SNI
   --tls-key PATH           PEM private key for the preceding --tls-cert
   --tls-ciphers LIST       OpenSSL cipher list for TLS 1.2
-  --ktls                   let the kernel encrypt TLS, so --static-dir files
-                           go out with sendfile over HTTPS too
+  --ktls                   accepted and ignored: the TLS record layer is
+                           BoringSSL's, which has no kernel TLS
   --no-http2               refuse HTTP/2 and answer HTTP/1.1 only
   --http2-only             serve only HTTP/2 (h2c), with no HTTP/1 fallback
   --http3                  also serve HTTP/3 over QUIC (needs TLS)

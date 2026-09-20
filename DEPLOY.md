@@ -160,6 +160,39 @@ still needs Swift.
 
 ---
 
+## When aviancore ships a security fix
+
+From 1.1.7 the TLS record layer and handshake are BoringSSL's, and the copy of
+BoringSSL is **vendored inside aviancore**, not taken from the system. Nothing
+on the user's machine updates it. A BoringSSL fix reaches anyone running
+Peregrine only when aviancore takes it and Peregrine cuts a release — for a
+wheel, because the wheel carries the compiled copy, and for the sdist, because
+the version range here decides what it compiles.
+
+`Package.swift` declares aviancore with `.upToNextMinor`, so a `0.7.x` patch
+is picked up by a fresh sdist build without a Peregrine change, while `0.8.0`
+is not. That is deliberate: security fixes are meant to land as patches.
+Wheels are frozen at build time regardless, so **a wheel always needs a new
+Peregrine release**, whatever the range says.
+
+How a fix is signalled, as agreed with the aviancore maintainer:
+
+* its `RELEASE.md` entry is prefixed `SECURITY:`, naming the BoringSSL
+  revision it takes and the CVE where there is one
+* the GitHub release is marked the same way
+* <https://github.com/grepjava/aviancore/releases> is the place to watch
+
+**There is no automated advisory feed, and nothing will notify you.** This is
+a person remembering to look. If that matters more than it does today —
+because Peregrine has users who assume otherwise — then watching the
+repository, or subscribing its releases to a feed reader, is the thing to set
+up, and it should not be left implicit.
+
+A fix that needs a BoringSSL API change could force a minor bump instead of a
+patch. That breaks the range above and needs a Peregrine commit either way.
+
+---
+
 ## When it goes wrong
 
 **`file already exists`** — that version is on PyPI. Bump. Do not try to

@@ -83,6 +83,15 @@ If PyPI has a wheel for this interpreter and platform, `pip` installs it in
 seconds and Swift is not required. Otherwise it falls back to the sdist, the
 Swift build runs, and that takes a few minutes.
 
+**The source build got longer in 1.1.7.** TLS is built against BoringSSL now,
+which aviancore vendors, so `pip` compiles a copy of it as well — 645 more
+files and 276 C++ translation units, fetched by the Swift package manager
+rather than carried in the sdist, which is still 1.7 MB. Measured on a 4-CPU
+machine, a clean install with no caches went from **51 s to 96 s**. Peak memory
+did not move: **411 MB either way**, so a machine that could build 1.1.6 can
+build this. Fewer cores scale it roughly as you would expect; the wheel path is
+unaffected, and on a small VPS it is the one worth preferring.
+
 The wheels cover CPython 3.11, 3.12, 3.13, 3.14 and free-threaded 3.14t, on
 Linux x86_64 and aarch64 with glibc 2.35 or newer (`manylinux_2_35`): Debian 12,
 Ubuntu 22.04, what came after them, Fedora, and the official `python:*-slim`
@@ -91,7 +100,7 @@ finishes:
 
 ```bash
 $ peregrine --version
-peregrine 1.1.6 (CPython 3.12.3)
+peregrine 1.1.7 (CPython 3.12.3)
 ```
 
 That second number is read from the running interpreter, not from the headers
@@ -229,7 +238,7 @@ back on for the whole process. Check what came out:
 
 ```console
 $ python3.14t -m peregrine --version
-peregrine 1.1.6 (CPython 3.14.6 free-threaded)
+peregrine 1.1.7 (CPython 3.14.6 free-threaded)
 ```
 
 Without `free-threaded` on that line, `--free-threaded` will refuse to start —

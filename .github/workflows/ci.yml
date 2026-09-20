@@ -111,6 +111,12 @@ jobs:
       - name: Response cache
         run: bash scripts/cache-test.sh "$PEREGRINE"
 
+      # The record layer is BoringSSL's from 1.1.7, and it holds its TLS 1.3
+      # ticket until the first application write. Nothing else here asks a
+      # question about resumption.
+      - name: TLS session resumption
+        run: bash scripts/resumption-test.sh "$PEREGRINE"
+
       - name: HTTP/2
         run: |
           python3 -m pip install --quiet --disable-pip-version-check h2

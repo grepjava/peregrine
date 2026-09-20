@@ -104,7 +104,7 @@ public enum Peregrine {
             // one is, here and in every worker after the fork.
             if config.ktls {
                 if av_tls_enable_ktls(1) == 0 {
-                    Log.warn("--ktls: this OpenSSL has no kernel TLS; encrypting in the process")
+                    Log.warn("--ktls: the TLS record layer has no kernel TLS; encrypting in the process")
                 } else if av_tls_kernel_ready() == 0 {
                     Log.warn("--ktls: the kernel tls module is not loaded (modprobe tls); encrypting in the process")
                 } else {

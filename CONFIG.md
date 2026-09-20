@@ -682,9 +682,8 @@ framed like any other response — the bytes have to be multiplexed or encrypted
 — which is still an interpreter, a `dict` of CGI variables and a list of byte
 strings per asset less than serving them from Python.
 
-`--ktls` takes TLS off that list on Linux. The kernel encrypts instead of
-OpenSSL, so an HTTPS/1.1 response gets the same `sendfile(2)` as a plaintext
-one:
+`--ktls` asked the Linux kernel to encrypt instead of OpenSSL, so that an
+HTTPS/1.1 response got the same `sendfile(2)` as a plaintext one:
 
 ```bash
 sudo modprobe tls        # once per boot, or list tls in /etc/modules-load.d
@@ -692,14 +691,33 @@ peregrine --ktls --tls-cert cert.pem --tls-key key.pem \
           --static-dir /static=/srv/app/static myapp:app
 ```
 
-On one worker, files of 1 MiB went out at 2172 MiB/s instead of 1485, and of
-16 MiB at 2206 instead of 1384, at about a third less CPU per gibibyte
-(`benchmarks/static_files.sh`). Everything else on the connection works as
-before, since OpenSSL still does the handshake and hands the kernel the keys.
-Where kernel TLS cannot be had — the module is not loaded, the cipher is one the
-kernel does not implement, the OpenSSL was built without it — OpenSSL encrypts
-as it always did, and the server says at start-up when the module is missing.
-HTTP/2 still reads its files: its bytes have to be framed first.
+**Since 1.1.7 the flag does nothing.** The TLS record layer is BoringSSL's
+now, and BoringSSL has no kernel TLS, so every build encrypts in the process.
+`--ktls` is still accepted, and still says at start-up that it is encrypting in
+the process, so that a command line carrying it keeps working.
+
+What the move costs, measured rather than assumed. Against OpenSSL **with**
+`--ktls`, on one worker over seven rotated rounds
+(`benchmarks/static_files.sh`):
+
+* at 64 KiB BoringSSL is ahead anyway, kernel TLS or not;
+* at 1 MiB and 16 MiB the difference is **inside this machine's run-to-run
+  variation** — a mean of a few percent against a per-round spread of 10 to 31
+  points, with the sign changing between rounds.
+
+No magnitude is quoted because five attempts at the same quantity produced
+**−18.6%, −13.7%, −5.0%, −4.5% and −3.6%**. That sequence is the finding. Any
+one of those numbers would have looked authoritative on its own, and the two
+largest were the ones measured least carefully.
+
+So the loss is real in principle and small in practice on this hardware. A
+server that pushes large files over HTTPS/1.1 all day should measure its own,
+on a quiet machine.
+
+It applies to **HTTP/1.1 only**. `--ktls` never helped HTTP/2 — framed bytes
+cannot take `sendfile(2)` in the first place, and h2 measured consistently
+*worse* with the flag than without it. Everything else TLS does gets cheaper:
+see [RELEASE.md](RELEASE.md).
 
 **A path with no file behind it reaches the application.** So does a `POST`, a
 path that is a prefix of the route rather than under it, and a directory. A
@@ -1163,7 +1181,7 @@ running it there would silently be slower than `--workers`, not faster.
 `peregrine --version` says which kind of interpreter the server runs in:
 
 ```
-peregrine 1.1.6 (CPython 3.14.6 free-threaded)
+peregrine 1.1.7 (CPython 3.14.6 free-threaded)
 ```
 
 One caveat that is not peregrine's to fix: importing an extension module that

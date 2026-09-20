@@ -139,9 +139,8 @@ public enum PeregrineCLI {
                                        SNI, using the names inside each certificate
               --tls-key PATH           PEM private key for the preceding --tls-cert
               --tls-ciphers LIST       OpenSSL cipher list for TLS 1.2
-              --ktls                   let the Linux kernel encrypt TLS, so --static-dir
-                                       files go out with sendfile over HTTPS too
-                                       (needs the tls module: modprobe tls)
+              --ktls                   accepted and ignored: the TLS record layer is
+                                       BoringSSL's, which has no kernel TLS
               --acme-domain NAME       get and renew a certificate for NAME from an
                                        ACME CA (Let's Encrypt by default), answering
                                        tls-alpn-01 on this port (repeatable)
@@ -221,7 +220,7 @@ public enum PeregrineCLI {
             _ = av_write(1, usage.utf8Start, usage.utf8CodeUnitCount)
         }
 
-        let version: StaticString = "peregrine 1.1.6"
+        let version: StaticString = "peregrine 1.1.7"
 
         /// Reports the build version and the CPython actually linked.
         ///

@@ -20,6 +20,70 @@ version reached PyPI, in UTC.
 
 ## Unreleased
 
+---
+
+## 1.1.7 — 2026-09-20
+
+### Changed
+
+- **TLS is BoringSSL's now.** The record layer and the handshake are built
+  against a copy of BoringSSL vendored inside
+  [aviancore](https://github.com/grepjava/aviancore); `avian_crypto.c`, ACME
+  and QUIC's primitives still call OpenSSL, which is still linked and still
+  required.
+
+  Measured here on one worker serving `--static-dir`, against the same server
+  built on OpenSSL, over seven rotated rounds:
+
+  | | throughput | CPU per GiB |
+  |---|---|---|
+  | HTTPS/1.1, 64 KiB | +23.5% | −19.4% |
+  | HTTPS/1.1, 1 MiB | +31.1% | −22.9% |
+  | HTTPS/1.1, 16 MiB | +30.8% | −22.8% |
+  | HTTP/2, 64 KiB | +44.8% | −30.8% |
+  | HTTP/2, 1 MiB | +44.2% | −31.0% |
+  | HTTP/2, 16 MiB | +35.3% | −25.8% |
+
+  A connection that handshakes once per request gains more: **+75%
+  throughput at 44.6% less CPU a request**, across five alternating pairs.
+  That one is conservative — the certificate is RSA-2048, whose signing cost
+  dilutes the difference between the two libraries.
+
+  Two consequences worth reading before upgrading:
+
+  - `--ktls` no longer does anything (below).
+  - **A BoringSSL security fix now reaches you only through a Peregrine
+    release**, because the copy is compiled into the wheel rather than taken
+    from the system. [DEPLOY.md](DEPLOY.md) records how that is signalled, and
+    that no automated advisory feed exists.
+
+- `--ktls` is accepted and ignored. BoringSSL has no kernel TLS, so every
+  build encrypts in the process; the flag still parses and still says so at
+  start-up, so an existing command line keeps working.
+
+  What that costs, stated as measured: against OpenSSL **with** `--ktls`,
+  BoringSSL is ahead at 64 KiB, and at 1 MiB and 16 MiB the difference is
+  inside the run-to-run variation of the machine it was measured on — so no
+  magnitude is given, because five attempts produced five different ones. The
+  loss is HTTPS/1.1-only: `--ktls` never helped HTTP/2, which has to frame its
+  bytes and so cannot use `sendfile(2)` at all, and h2 measured consistently
+  worse with the flag than without it. [CONFIG.md](CONFIG.md) has the detail.
+
+- Peregrine now asks for aviancore with `.upToNextMinor` rather than `from:`.
+  `from: "0.1.1"` meant ">= 0.1.1, < 1.0.0", so a source build of 1.1.6 made
+  after aviancore 0.7.0 was tagged silently compiled against a **different TLS
+  library** than its release notes describe. Since the sdist compiles
+  aviancore on the installing machine, that was a live hazard rather than a
+  theoretical one. A `0.7.x` patch — how a BoringSSL fix arrives — is still
+  picked up without a Peregrine change; `0.8.0` is not.
+
+### Added
+
+- `scripts/resumption-test.sh`: TLS session resumption, for TLS 1.3 and 1.2 —
+  7 checks, needing only `openssl` and the server. Peregrine's suites asserted
+  nothing about resumption before this, which is why they stayed green through
+  a BoringSSL ticket-timing change that aviancore's own checks caught.
+
 ### Fixed
 
 - WebSocket: close code 1004, which RFC 6455 reserves, was accepted. A client
