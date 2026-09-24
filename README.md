@@ -561,7 +561,7 @@ bash scripts/framework-test.sh                  # checks against real FastAPI
                                                 #   over HTTP/1.1 and HTTP/2
 <venv>/bin/python scripts/http2-test.py         # 196 checks against `h2`
 <venv>/bin/python scripts/http3-test.py         # 121 checks against `aioquic`
-python3 scripts/contrib_test.py                 #  75 Python-only: routing,
+python3 scripts/contrib_test.py                 #  83 Python-only: routing,
                                                 #   converters, session helper
 <venv>/bin/python scripts/webtransport-test.py  # sessions, streams, datagrams,
                                                 #   plus FastAPI over HTTP/3

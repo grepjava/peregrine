@@ -47,8 +47,16 @@ What the draft leaves to the server, decided as Garuda decides it:
     one is usually a connection that died without either side noticing, and
     the client has come back on a new one. When the older request is on the
     same event loop it is ended, what it received is kept, and the new request
-    goes on. When it is on another worker, the new request waits a moment for
-    it and is answered 409 with Retry-After if it is still going.
+    goes on -- a HEAD included, as the draft recommends, which is why a client
+    must not ask for the offset while it is still sending. When it is on
+    another worker, the new request waits a moment for it and is answered 409
+    (an append) or 503 (HEAD, GET, DELETE) with Retry-After if it is still
+    going: an offset still growing is one the next append would be refused
+    at.
+  * An `on_complete` that raises. The upload stays complete and the client is
+    answered 500, as the draft's own example of a failed completion is: every
+    byte arrived, so there is nothing left to resume, and HEAD says so. The
+    bytes stay in the store until `max_age`, for the application to reconcile.
   * An answer that never arrived. The answer to the request that completed an
     upload is remembered as it is sent, and given again to a GET of the
     upload's URL until `max_age`. It outlives the bytes, so a handler that
@@ -227,6 +235,13 @@ def _sha256_of_file(path):
     return h.digest()
 
 
+async def _hash_file(path):
+    """`_sha256_of_file` on a thread. An upload can be gigabytes, and hashing
+    it on the event loop would stall every other request the loop serves for
+    as long as that takes; hashlib lets go of the GIL while it works."""
+    return await asyncio.get_running_loop().run_in_executor(None, _sha256_of_file, path)
+
+
 # --------------------------------------------------------------------- store
 
 
@@ -290,6 +305,11 @@ class _Handle:
             finally:
                 os.close(self._fd)
                 self._fd = -1
+
+    # The requests release their handles in `finally`. This is only for one
+    # that leaks anyway: the descriptor is a plain int, and without it the
+    # lock would be held until the process exits.
+    __del__ = release
 
 
 class FileUploadStore:
@@ -373,6 +393,22 @@ class FileUploadStore:
             os.close(fd)
             raise
         return _Handle(upload_id, fd, os.fstat(fd).st_size)
+
+    def busy(self, upload_id):
+        """Whether a request, in this process or another, is appending."""
+        if not self._valid(upload_id):
+            return False
+        try:
+            fd = os.open(self.data_path(upload_id), os.O_RDONLY)
+        except FileNotFoundError:
+            return False
+        try:
+            fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+            return False
+        except BlockingIOError:
+            return True
+        finally:
+            os.close(fd)
 
     def update(self, upload_id, length, complete):
         """Records the declared length, or that the upload is whole."""
@@ -462,6 +498,17 @@ class FileUploadStore:
                         os.unlink(self._done_path(upload_id))
                     except OSError:
                         pass
+            # What a process that died part-way leaves: bytes whose record was
+            # never written or already removed, and a record written aside and
+            # never renamed into place. Nothing refers to either, so they go
+            # once they are as old as an upload would be.
+            elif (name.endswith(".data") and upload_id not in ids) or name.endswith(".tmp"):
+                path = os.path.join(self.directory, name)
+                try:
+                    if os.stat(path).st_mtime < cutoff:
+                        os.unlink(path)
+                except OSError:
+                    pass
         return removed
 
     def _save(self, info):
@@ -740,17 +787,22 @@ class _Service:
         handle = self.store.acquire(info.id)
         if handle is None:
             return await request.respond(503)
-        interim = resumable and request.speaks_draft()
-        url = "%s/%s" % (location_prefix, info.id)
-        if interim:
-            await request.interim([
-                ("Upload-Draft-Interop-Version", str(UPLOAD_DRAFT_INTEROP_VERSION)),
-                ("Location", url),
-                ("Upload-Limit", limits.field(limits.max_age)),
-            ])
-        await self.transfer(request, handle, complete=complete, length=length,
-                            resumable=resumable, interim=interim, creating=True, url=url,
-                            content_digest=content_digest)
+        # Released however this ends, the 104 included: a send can raise, and
+        # a lock left held is an upload nobody can resume.
+        try:
+            interim = resumable and request.speaks_draft()
+            url = "%s/%s" % (location_prefix, info.id)
+            if interim:
+                await request.interim([
+                    ("Upload-Draft-Interop-Version", str(UPLOAD_DRAFT_INTEROP_VERSION)),
+                    ("Location", url),
+                    ("Upload-Limit", limits.field(limits.max_age)),
+                ])
+            await self.transfer(request, handle, complete=complete, length=length,
+                                resumable=resumable, interim=interim, creating=True, url=url,
+                                content_digest=content_digest)
+        finally:
+            handle.release()
 
     # --- appending
 
@@ -811,10 +863,20 @@ class _Service:
         if handle is None:
             return await request.respond(409, [("Retry-After", "1")],
                                          "another request is appending to this upload")
+        # Released however this ends. The refusals below let go before they
+        # answer, so the next request is not kept waiting on this one's send.
+        try:
+            await self._append_held(request, handle, upload_id, offset, complete, length,
+                                    content_digest)
+        finally:
+            handle.release()
+
+    async def _append_held(self, request, handle, upload_id, offset, complete, length,
+                           content_digest):
         # Taking the lock can wait on a request that was still appending, and
         # what it did is not in the info read before the wait: it may have
         # completed the upload, or declared its length. Reading it again under
-        # the lock is what makes the checks above hold now.
+        # the lock is what makes the checks before it hold now.
         current = self.store.info(upload_id)
         if current is None:
             handle.release()
@@ -938,7 +1000,7 @@ class _Service:
             declared = _sha256_of_field(stored.repr_digest) \
                 if stored is not None and stored.repr_digest else None
             if declared is not None:
-                actual = _sha256_of_file(self.store.data_path(upload_id))
+                actual = await _hash_file(self.store.data_path(upload_id))
                 if actual is None or not secrets.compare_digest(actual, declared):
                     # Whole and wrong: appending cannot mend it, so it goes.
                     handle.release()
@@ -950,7 +1012,7 @@ class _Service:
                                               "the upload is not what Repr-Digest says")
                 sha256 = actual
             elif wants_digest:
-                sha256 = _sha256_of_file(self.store.data_path(upload_id))
+                sha256 = await _hash_file(self.store.data_path(upload_id))
             self.store.update(upload_id, length=offset, complete=True)
         finally:
             handle.release()
@@ -1014,10 +1076,27 @@ class _Service:
 
     # --- offset, limits, cancellation
 
-    async def offset(self, request, upload_id, replaying):
-        # An offset is only worth giving once nothing is still adding to it.
+    async def settle(self, upload_id):
+        """Waits for nothing to be appending to the upload: one request on
+        this event loop is ended, as the draft recommends (section 4.6), and
+        one on another worker is given a moment to finish. False if it is
+        still going."""
         await self.supersede(upload_id)
+        for attempt in range(20):
+            if not self.store.busy(upload_id):
+                return True
+            if attempt < 19:
+                await asyncio.sleep(0.025)
+        return False
+
+    async def offset(self, request, upload_id, replaying):
         no_store = [("Cache-Control", "no-store")]
+        # An offset is only worth giving once nothing is still adding to it:
+        # one that is still growing is one the next append would be refused
+        # at, and the draft says an offset given must be one it accepts.
+        if not await self.settle(upload_id):
+            return await request.respond(503, no_store + [("Retry-After", "1")],
+                                         "another request is appending to this upload")
         # A GET for an upload that finished is the client asking for the
         # answer it did not get. HEAD is left as the draft describes it.
         if replaying:
@@ -1048,7 +1127,12 @@ class _Service:
         await request.respond(204, headers)
 
     async def cancel(self, request, upload_id):
-        await self.supersede(upload_id)
+        # Not while another worker is still writing into it: its bytes would
+        # go on landing in a file nobody can reach, and its completion would
+        # find the upload gone.
+        if not await self.settle(upload_id):
+            return await request.respond(503, [("Retry-After", "1")],
+                                         "another request is appending to this upload")
         try:
             # Everything, the answer included: the client asked for this
             # upload to be gone.
@@ -1127,7 +1211,7 @@ class ResumableUploads:
         if (path.rstrip("/") or "/") == self.path:
             if method in self.methods:
                 request = _Request(scope, receive, send)
-                prefix = scope.get("root_path", "") + self.uploads
+                prefix = scope.get("root_path", "").rstrip("/") + self.uploads
                 await service.create(request, prefix)
                 return True
             if method == "OPTIONS":

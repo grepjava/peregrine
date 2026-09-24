@@ -12,6 +12,7 @@ plumbing those cannot reach without a build.
 import asyncio
 import os
 import sys
+import time
 import uuid
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -536,6 +537,103 @@ def test_uploads():
         is_("leaving nothing", os.listdir(directory), [])
         check("an id that is not one of the store's is never a path",
               store.info("../../etc/passwd") is None)
+
+        # What a process that died part-way leaves: bytes with no record, and
+        # a record never renamed into place. Old ones go; a new one may be an
+        # upload being created right now, and stays.
+        for name in ("a" * 32 + ".data", "b" * 32 + ".info.1.2.tmp", "c" * 32 + ".data"):
+            open(os.path.join(directory, name), "wb").close()
+        old = time.time() - 3600
+        os.utime(os.path.join(directory, "a" * 32 + ".data"), (old, old))
+        os.utime(os.path.join(directory, "b" * 32 + ".info.1.2.tmp"), (old, old))
+        store.remove_expired(60)
+        is_("expiry removes what a dead process left, once it is old",
+            os.listdir(directory), ["c" * 32 + ".data"])
+    finally:
+        shutil.rmtree(directory, ignore_errors=True)
+    asyncio.run(_uploads_asgi(u))
+
+
+async def _uploads_asgi(u):
+    import shutil
+    import tempfile
+    import threading
+
+    def scope(method, path, headers=(), root_path=""):
+        return {"type": "http", "method": method, "path": path, "root_path": root_path,
+                "headers": [(k.encode(), v.encode()) for k, v in headers],
+                "extensions": {"http.response.informational": {}}}
+
+    async def call(app, s, body=b"", fail_on=None):
+        sent = []
+        messages = [{"type": "http.request", "body": body, "more_body": False}]
+
+        async def receive():
+            return messages.pop(0) if messages else {"type": "http.disconnect"}
+
+        async def send(message):
+            if message["type"] == fail_on:
+                raise RuntimeError("the send failed")
+            sent.append(message)
+        await app(s, receive, send)
+        starts = [m for m in sent if m["type"] == "http.response.start"]
+        return (starts[-1]["status"] if starts else None,
+                {k.lower(): v for k, v in starts[-1]["headers"]} if starts else {}, sent)
+
+    print("\nresumable uploads: the ASGI side")
+    directory = tempfile.mkdtemp(prefix="peregrine-uploads-asgi-")
+    try:
+        store = u.FileUploadStore(directory)
+        hashed_on = []
+        real = u._sha256_of_file
+
+        def recording(path):
+            hashed_on.append(threading.get_ident())
+            return real(path)
+        u._sha256_of_file = recording
+
+        async def finished(upload):
+            return 201, [], b"done"
+        app = u.ResumableUploads(None, "/files", store=store, on_complete=finished)
+
+        status, headers, _ = await call(app, scope(
+            "POST", "/files", [("upload-complete", "?1"), ("want-repr-digest", "sha-256=1")]),
+            b"abc")
+        check("a whole-upload digest is computed off the event loop's thread",
+              status == 201 and hashed_on and hashed_on[0] != threading.get_ident(),
+              (status, hashed_on))
+        u._sha256_of_file = real
+
+        # A 104 whose send fails must not leave the upload locked.
+        try:
+            await call(app, scope("POST", "/files", [("upload-complete", "?0"),
+                                                      ("upload-draft-interop-version", "9")]),
+                       b"abc", fail_on="http.response.informational")
+            bad("a failing 104 send reaches the caller", "RuntimeError", "nothing")
+        except RuntimeError:
+            ok("a failing 104 send reaches the caller")
+        ids = [n[:-5] for n in os.listdir(directory)
+               if n.endswith(".info") and not store.info(n[:-5]).complete]
+        handle = store.acquire(ids[0]) if len(ids) == 1 else None
+        check("and the upload it was creating can still be taken", handle is not None, ids)
+
+        # Held elsewhere -- another worker, as far as this loop can tell.
+        status, headers, _ = await call(app, scope("HEAD", "/uploads/" + ids[0]))
+        is_("a HEAD while another worker appends waits, then says to retry",
+            (status, headers.get(b"retry-after")), (503, b"1"))
+        status, _, _ = await call(app, scope("DELETE", "/uploads/" + ids[0]))
+        is_("and so does a DELETE, rather than pulling the file from under it", status, 503)
+        # The other worker's append lands, and then it lets go.
+        handle.append(b"abc")
+        asyncio.get_running_loop().call_later(0.1, handle.release)
+        status, headers, _ = await call(app, scope("HEAD", "/uploads/" + ids[0]))
+        is_("one that finishes while it waits gets its final offset",
+            (status, headers.get(b"upload-offset")), (204, b"3"))
+
+        status, headers, _ = await call(app, scope("POST", "/files", [("upload-complete", "?0")],
+                                                   root_path="/api/"), b"x")
+        check("a root_path ending in a slash does not double it",
+              headers.get(b"location", b"").startswith(b"/api/uploads/"), headers)
     finally:
         shutil.rmtree(directory, ignore_errors=True)
 
