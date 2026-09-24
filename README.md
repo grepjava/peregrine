@@ -229,6 +229,39 @@ Both are listed in `scope["extensions"]`. 100 and 101 stay the server's, a
 header that frames or belongs to the connection is refused, and to an
 HTTP/1.0 client, which has no interim responses, nothing is sent.
 
+**Resumable uploads:** `peregrine.contrib.uploads` serves the IETF resumable
+upload protocol (draft-ietf-httpbis-resumable-upload, interop version 9) in
+front of any ASGI application. A client cut off mid-upload asks how much
+arrived and sends the rest, over any protocol and on any worker, and the
+application is called once, with the whole body on disk:
+
+```python
+from peregrine.contrib.uploads import FileUploadStore, ResumableUploads, UploadLimits
+
+async def finished(upload):              # every byte is in upload.path
+    shutil.move(upload.path, destination(upload.metadata["user"]))
+    upload.remove()
+    return 201, [(b"content-type", b"text/plain")], b"stored\n"
+
+app = ResumableUploads(api, "/files", store=FileUploadStore("/var/lib/app/uploads"),
+                       limits=UploadLimits(max_size=10 << 30),
+                       on_create=lambda scope: {"user": user_of(scope)},
+                       on_complete=finished)
+```
+
+The client is told where its upload lives by a 104 before any of the body is
+read. The upload's URL (`/uploads/<id>`) answers HEAD with the offset, PATCH
+appends from it, DELETE cancels it, and GET gives a client that lost its
+answer the one `on_complete` returned. `on_create` sees the request that
+created the upload and whatever it returns reaches `on_complete` as
+`metadata`, so it is where to record whose upload it is: the request that
+finishes an upload is a later one. Uploads are files and `flock`s in the store's
+directory, so workers need nothing else to share them; the limits,
+`Content-Digest` and `Repr-Digest` checks, expiry, and the rest of what the
+draft leaves to the server are described in
+[the module](https://github.com/grepjava/peregrine/blob/main/python/peregrine/contrib/uploads.py). It is the protocol Garuda's
+`GarudaUploads` serves, decided the same way.
+
 **ASGI 3.0 (WebSocket):** the full connect / accept / receive / send / close
 cycle, subprotocol negotiation, extra handshake headers, fragmented messages,
 text and binary, keepalive ping/pong with a dead-peer timeout, and a message
@@ -517,7 +550,7 @@ only that the understanding is consistent.
 swift test                                      # the fuzz corpus, replayed
                                                 #   through every parser
 bash scripts/integration-test.sh                #  62 end-to-end checks
-python3 scripts/feature-test.py                 # 225 checks for the failure
+python3 scripts/feature-test.py                 # 251 checks for the failure
                                                 #   modes a plain request never
                                                 #   reaches: slow consumers,
                                                 #   stuck-request shutdown,
@@ -526,13 +559,15 @@ python3 scripts/feature-test.py                 # 225 checks for the failure
 bash scripts/framework-test.sh                  # checks against real FastAPI
                                                 #   and Flask applications,
                                                 #   over HTTP/1.1 and HTTP/2
-<venv>/bin/python scripts/http2-test.py         # 182 checks against `h2`
-<venv>/bin/python scripts/http3-test.py         # 114 checks against `aioquic`
-python3 scripts/contrib_test.py                 #  58 Python-only: routing,
+<venv>/bin/python scripts/http2-test.py         # 196 checks against `h2`
+<venv>/bin/python scripts/http3-test.py         # 121 checks against `aioquic`
+python3 scripts/contrib_test.py                 #  75 Python-only: routing,
                                                 #   converters, session helper
 <venv>/bin/python scripts/webtransport-test.py  # sessions, streams, datagrams,
                                                 #   plus FastAPI over HTTP/3
                                                 #   and WebTransport
+<venv>/bin/python scripts/upload-test.py        #  68 resumable uploads over
+                                                #   HTTP/1.1, HTTP/2, HTTP/3
 swift run -c release pgfuzz                     # mutation fuzzing of every
                                                 #   parser that reads bytes
                                                 #   from the network

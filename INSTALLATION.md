@@ -307,14 +307,15 @@ S=scripts/peregrine-ext
 
 swift test                                      # the fuzz corpus
 bash scripts/integration-test.sh $S             #  62 end-to-end checks
-python3 scripts/feature-test.py $S              # 225 failure-mode checks
+python3 scripts/feature-test.py $S              # 251 failure-mode checks
 bash scripts/framework-test.sh $S               # against real FastAPI and
                                                 #   Flask applications
-<venv>/bin/python scripts/http2-test.py $S      # 182 against `h2`
-<venv>/bin/python scripts/http3-test.py $S      # 114 against `aioquic`
-python3 scripts/contrib_test.py                 #  58 Python-only
+<venv>/bin/python scripts/http2-test.py $S      # 196 against `h2`
+<venv>/bin/python scripts/http3-test.py $S      # 121 against `aioquic`
+python3 scripts/contrib_test.py                 #  75 Python-only
 <venv>/bin/python scripts/webtransport-test.py $S  # FastAPI over HTTP/3
                                                 #   and WebTransport
+<venv>/bin/python scripts/upload-test.py $S    #  68 resumable uploads
 ```
 
 Every suite takes the server's path as its first argument.

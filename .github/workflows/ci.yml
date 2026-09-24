@@ -130,6 +130,13 @@ jobs:
           python3 -m pip install --quiet --disable-pip-version-check aioquic
           python3 scripts/http3-test.py "$PEREGRINE"
 
+      # Over all three protocols, so it needs aioquic as the HTTP/3 step does.
+      - name: Resumable uploads
+        if: ${{ !endsWith(matrix.python, 't') }}
+        run: |
+          python3 -m pip install --quiet --disable-pip-version-check h2 aioquic
+          python3 scripts/upload-test.py "$PEREGRINE"
+
       # A worker per core, and the request path shared between them, is the
       # shape most deployments actually run.
       - name: The same suites with four workers

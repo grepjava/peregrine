@@ -15,4 +15,7 @@ themselves and hand everything else to the application unchanged.
 Paths keep each framework's own spelling. Starlette `{name}` / `{name:int}`
 and Django `<str:name>` / `<int:name>` convert; a missing trailing slash is
 tried the other way, because a session cannot be HTTP-redirected.
+
+`uploads` is the other thing here: resumable uploads (the IETF draft), as an
+ASGI application that serves the upload routes in front of any other.
 """

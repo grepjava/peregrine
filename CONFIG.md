@@ -296,10 +296,10 @@ The suites do not rely on curl having HTTP/3, and drive the server with
 bash scripts/framework-test.sh                  # FastAPI and Flask over
                                                 #   HTTP/1.1 and HTTP/2, and
                                                 #   Starlette websockets
-python3 scripts/contrib_test.py                 # 58 Python-only: routing
+python3 scripts/contrib_test.py                 # 75 Python-only: routing
 <venv>/bin/python scripts/webtransport-test.py  # FastAPI over HTTP/3 and
                                                 #   WebTransport
-<venv>/bin/python scripts/http3-test.py         # 114, WSGI and ASGI over
+<venv>/bin/python scripts/http3-test.py         # 121, WSGI and ASGI over
                                                 #   HTTP/3
 ```
 

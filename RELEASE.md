@@ -30,6 +30,15 @@ version reached PyPI, in UTC.
   application's choosing, such as the 104 a resumable upload starts with.
   Both appear in `scope["extensions"]`, which HTTP/1.1 and HTTP/2 scopes now
   have. [README](README.md) has the detail.
+- `peregrine.contrib.uploads`: resumable uploads (draft-ietf-httpbis-resumable-
+  upload, interop version 9) in front of any ASGI application, the protocol
+  Garuda's GarudaUploads serves. A client cut off mid-upload asks how much
+  arrived and sends the rest, over HTTP/1.1, HTTP/2 or HTTP/3 and on any
+  worker, and the application is called once with the whole body on disk.
+  Limits, `Content-Digest` and `Repr-Digest`, expiry, the answer kept for a
+  client that lost it, and an `on_create` hook for whose upload it is are
+  covered; `scripts/upload-test.py` checks it end to end, 68 checks with two
+  workers.
 
 ### Fixed
 

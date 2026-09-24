@@ -481,6 +481,65 @@ def test_as_bytes():
         ok("an int is refused rather than becoming NULs")
 
 
+def test_uploads():
+    import shutil
+    import tempfile
+    from peregrine.contrib import uploads as u
+
+    print("\nresumable uploads: fields and store")
+    is_("?1 and ?0 are Booleans", (u._sf_boolean("?1"), u._sf_boolean(" ?0 ")), (True, False))
+    is_("nothing else is", [u._sf_boolean(t) for t in ("1", "?2", "true", "")], [None] * 4)
+    is_("an Integer is digits", u._sf_integer(" 42 "), 42)
+    is_("and not a sign, a fraction or 16 digits",
+        [u._sf_integer(t) for t in ("-1", "1.0", "1" * 16, "", "0x1")], [None] * 5)
+    digest = __import__("hashlib").sha256(b"x").digest()
+    field = u._digest_field(digest)
+    is_("a digest field reads back", u._sha256_of_field("md5=:AA==:, " + field), digest)
+    is_("one that is not a byte sequence is not guessed at",
+        u._sha256_of_field("sha-256=abc"), None)
+    check("Want-Repr-Digest is read, and 0 means no",
+          u._wants_sha256("sha-256=5") and not u._wants_sha256("sha-256=0")
+          and not u._wants_sha256("sha-512=3"))
+    is_("Upload-Limit lists what is set, in the draft's order",
+        u.UploadLimits(max_size=10, min_append_size=2, max_age=60).field(30),
+        "max-size=10, min-append-size=2, max-age=30")
+    try:
+        u.UploadLimits(max_size=1, min_size=2)
+        bad("limits that contradict each other are refused", "ValueError", "accepted")
+    except ValueError:
+        ok("limits that contradict each other are refused")
+    is_("on_complete's answers take every documented shape",
+        [u._answer_parts(a) for a in (None, 202, b"x", (201, b"y"), (200, [], b"z"))],
+        [(204, [], b""), (202, [], b""), (200, [], b"x"), (201, [], b"y"), (200, [], b"z")])
+
+    directory = tempfile.mkdtemp(prefix="peregrine-uploads-unit-")
+    try:
+        store = u.FileUploadStore(directory)
+        info = store.create(length=5, content_type="text/plain", metadata={"user": "ada"})
+        handle = store.acquire(info.id)
+        is_("a second request cannot take an upload being appended to",
+            store.acquire(info.id), None)
+        handle.append(b"abc")
+        handle.release()
+        again = store.info(info.id)
+        is_("the offset is what reached the disk, and the record reads back",
+            (again.offset, again.length, again.metadata), (3, 5, {"user": "ada"}))
+        store.remember(info.id, 201, "text/plain", "/elsewhere", b"body\nwith newline", 7)
+        answer = store.answer(info.id)
+        is_("a remembered answer keeps its body whole",
+            (answer.status, answer.content_type, answer.location, answer.body,
+             answer.created_at), (201, "text/plain", "/elsewhere", b"body\nwith newline", 7))
+        store.delete(info.id)
+        check("deleting keeps the answer", store.info(info.id) is None
+              and store.answer(info.id) is not None)
+        is_("and expiry takes it once it is old", store.remove_expired(0), 0)
+        is_("leaving nothing", os.listdir(directory), [])
+        check("an id that is not one of the store's is never a path",
+              store.info("../../etc/passwd") is None)
+    finally:
+        shutil.rmtree(directory, ignore_errors=True)
+
+
 def run_all(ok=ok, is_=is_, check=check, bad=bad):
     """Entry used by webtransport-test.py, sharing that file's reporters."""
     globals()["ok"] = ok
@@ -491,6 +550,7 @@ def run_all(ok=ok, is_=is_, check=check, bad=bad):
     test_django_routes()
     test_helpers()
     test_as_bytes()
+    test_uploads()
     asyncio.run(test_slash_fallback())
     asyncio.run(test_altsvc())
     asyncio.run(test_endpoint_disconnect())
