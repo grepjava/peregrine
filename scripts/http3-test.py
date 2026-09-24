@@ -723,6 +723,13 @@ async def response_framing():
                 (status, b"content-length" in headers, len(body) > 0),
                 (404, False, True))
 
+            # A 204 is complete when its head goes out, but the application
+            # still sends the empty body ASGI asks of it.
+            status, _, _ = await client.request("GET", "/nocontent")
+            _, _, body = await client.request("GET", "/nocontent-error")
+            is_("the empty body after a 204's head is taken without complaint",
+                (status, body), (204, b"none"))
+
 
 async def flow_control():
     print("\nFlow control")

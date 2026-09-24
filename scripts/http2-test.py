@@ -668,6 +668,15 @@ def test_response_framing():
         is_("a 304 keeps the content-length the application gave",
             headers[s4].get(b"content-length"), b"5")
         is_("and neither has a body", (body.get(s3, b""), body.get(s4, b"")), (b"", b""))
+
+        # A 204 is complete when its head goes out, but the application still
+        # sends the empty body ASGI asks of it, and must not be told off.
+        s5 = c.request(path="/nocontent")
+        c.collect([s5], deadline=10.0)
+        s6 = c.request(path="/nocontent-error")
+        _, _, body, _ = c.collect([s6], deadline=10.0)
+        is_("the empty body after a 204's head is taken without complaint",
+            body.get(s6), b"none")
         c.close()
 
 

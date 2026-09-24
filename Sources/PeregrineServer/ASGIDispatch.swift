@@ -749,6 +749,15 @@ extension Worker {
         }
 
         if c.pointee.flags.contains(.responseComplete) {
+            // Over HTTP/2 and HTTP/3 a 204, a 304 or a HEAD answered in its
+            // head is complete as soon as the head goes out, with nothing left
+            // for a body to carry. The empty http.response.body an ASGI
+            // application sends after it anyway is what the specification
+            // asks of it, not a mistake.
+            if (c.pointee.isStream || c.pointee.isH3Stream)
+                && c.pointee.flags.contains(.suppressBody) {
+                return true
+            }
             pg_err_set_str(pg_exc_runtime(),
                            "http.response.body after the response was completed")
             return false

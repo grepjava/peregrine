@@ -33,6 +33,11 @@ version reached PyPI, in UTC.
 
 ### Fixed
 
+- HTTP/2 and HTTP/3: after the head of a 204, a 304, or a HEAD response that
+  declares a length of 0, the empty `http.response.body` every ASGI
+  application sends next raised `RuntimeError` in the application, though the
+  client saw nothing wrong. Starlette's `Response(status_code=204)` sends
+  exactly that. It is now accepted.
 - WSGI: `start_response(status, headers, None)` could be called any number
   of times. An explicit `exc_info=None` now counts as leaving it out, as it
   does in `wsgiref`, so a second call raises `RuntimeError`.

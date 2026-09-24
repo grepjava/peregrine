@@ -33,6 +33,9 @@ STARTUP_COUNTER = os.environ.get("PEREGRINE_STARTUP_COUNTER")
 # needs it back.
 STARTUP_DELAY = os.environ.get("PEREGRINE_STARTUP_DELAY")
 
+# What the last /nocontent send of an empty body met, for http2-test.py.
+NOCONTENT = {"error": "unset"}
+
 
 async def app(scope, receive, send):
     global startup_ran, late_receive, was_cancelled
@@ -229,7 +232,16 @@ async def app(scope, receive, send):
 
     elif path == "/nocontent":
         await send({"type": "http.response.start", "status": 204, "headers": []})
-        await send({"type": "http.response.body", "body": b""})
+        # The empty body every application sends after a head that allows
+        # none; whether the server took it is only visible from here.
+        try:
+            await send({"type": "http.response.body", "body": b""})
+            NOCONTENT["error"] = "none"
+        except RuntimeError as exc:
+            NOCONTENT["error"] = str(exc)
+
+    elif path == "/nocontent-error":
+        await reply(NOCONTENT["error"].encode())
 
     elif path == "/notmodified":
         # A 304 may say how long the representation it stands for is.
