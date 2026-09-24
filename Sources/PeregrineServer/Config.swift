@@ -73,6 +73,9 @@ public struct ServerConfig {
     // --- limits ---
     public var readBufferSize = 16 * 1024
     public var maxHeadSize = 32 * 1024
+    /// Room to percent-decode a request path into. A path is part of the head,
+    /// so one sized to --max-header-size fits any path the parser accepts.
+    public var pathScratchCapacity: Int { max(1 << 16, maxHeadSize) }
     public var maxHeaders = 100
     public var maxBodySize = 16 * 1024 * 1024
     /// Response bytes buffered before the worker starts applying backpressure.

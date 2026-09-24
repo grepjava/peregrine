@@ -189,7 +189,8 @@ public enum ASGIRuntime {
                                              rootPath: config.rootPath,
                                              serverHost: config.serverName,
                                              serverPort: Int(config.port),
-                                             lifespanState: lifespanState) else {
+                                             lifespanState: lifespanState,
+                                             scratchCapacity: config.pathScratchCapacity) else {
             PyError.logPending("preparing the ASGI scope")
             return false
         }

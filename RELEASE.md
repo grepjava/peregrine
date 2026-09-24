@@ -20,6 +20,15 @@ version reached PyPI, in UTC.
 
 ## Unreleased
 
+### Fixed
+
+- WSGI: `start_response(status, headers, None)` could be called any number
+  of times. An explicit `exc_info=None` now counts as leaving it out, as it
+  does in `wsgiref`, so a second call raises `RuntimeError`.
+- With `--max-header-size` above 64 KiB, an escaped request path longer than
+  64 KiB reached the application undecoded in `scope["path"]` and
+  `PATH_INFO`. The decode buffer now grows with the head limit.
+
 ---
 
 ## 1.1.7 — 2026-09-20

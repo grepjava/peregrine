@@ -181,6 +181,20 @@ def application(environ, start_response):
 
         return produce_then_fail()
 
+    if path == "/twicenone":
+        # An explicit exc_info=None is the same as leaving it out, so the
+        # second call has nothing to replace a head with and must raise.
+        start_response("200 OK", [("Content-Type", "text/plain")], None)
+        try:
+            start_response("200 OK", [("Content-Type", "text/plain")], None)
+        except RuntimeError as exc:
+            return [b"raised: %s\n" % str(exc).encode()]
+        return [b"accepted\n"]
+
+    if path.startswith("/decoded/"):
+        start_response("200 OK", [("Content-Type", "text/plain")])
+        return [b"%d %s" % (len(path), b"escaped" if "%" in path else b"decoded")]
+
     if path == "/overlong":
         # Five bytes behind a promise of two. The client must never see the
         # other three: on a keep-alive connection it would read them as the

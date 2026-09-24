@@ -320,6 +320,9 @@ async def app(scope, receive, send):
             except asyncio.CancelledError:
                 pass
 
+    elif path.startswith("/decoded/"):
+        await reply(b"%d %s" % (len(path), b"escaped" if "%" in path else b"decoded"))
+
     elif path == "/boom":
         raise RuntimeError("intentional asgi failure")
 

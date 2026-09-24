@@ -1071,7 +1071,8 @@ public enum Peregrine {
                                             rootPath: config.rootPath,
                                             multiprocess: !config.freeThreaded && siblings,
                                             multithread: threads > 1
-                                                || (config.freeThreaded && siblings)) else {
+                                                || (config.freeThreaded && siblings),
+                                            scratchCapacity: config.pathScratchCapacity) else {
                 Log.error("could not prepare the WSGI runtime")
                 return nil
             }

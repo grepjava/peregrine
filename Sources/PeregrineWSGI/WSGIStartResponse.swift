@@ -160,15 +160,15 @@ private func srCall(_ selfObj: PyObj?, _ args: PyObj?, _ kwargs: PyObj?) -> PyOb
         return nil
     }
 
-    if n == 3 {
-        let excInfo = pg_tuple_get(args, 2)!
-        if pg_is(excInfo, Interned.none) == 0 {
-            // PEP 3333: with exc_info and headers already on the wire, the
-            // server must re-raise so the failure is not silently swallowed.
-            if pg_obj_i1(selfObj) != 0 {
-                pg_err_restore_from_exc_info(excInfo)
-                return nil
-            }
+    // An explicit None is the same as leaving exc_info out, as it is in
+    // wsgiref: it does not license a second call.
+    let excInfo: PyObj = n == 3 ? pg_tuple_get(args, 2)! : Interned.none
+    if pg_is(excInfo, Interned.none) == 0 {
+        // PEP 3333: with exc_info and headers already on the wire, the
+        // server must re-raise so the failure is not silently swallowed.
+        if pg_obj_i1(selfObj) != 0 {
+            pg_err_restore_from_exc_info(excInfo)
+            return nil
         }
     } else if pg_obj_i0(selfObj) != 0 {
         pg_err_set_str(pg_exc_runtime(),

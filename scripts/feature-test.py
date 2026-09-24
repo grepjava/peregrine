@@ -1097,6 +1097,11 @@ def test_wsgi_lazy_start_response():
             is_("%s: the replacement response is what arrives" % label,
                 body, b"replaced\n")
 
+            # exc_info=None is exc_info left out, which allows one call only.
+            status, headers, body = server.get("/twicenone")
+            is_("%s: a second start_response with exc_info=None raises" % label,
+                body, b"raised: start_response() called twice without exc_info\n")
+
 
 def test_header_shapes():
     print("\nFramework compatibility")
@@ -1934,6 +1939,22 @@ def test_root_path():
             check("and SCRIPT_NAME /api", "SCRIPT_NAME='/api'" in text, text[:300])
 
 
+def test_long_escaped_path():
+    print("\nescaped paths longer than 64 KiB")
+    # The decode buffer used to be a fixed 64 KiB, and a longer path reached
+    # the application still escaped. --max-header-size lets the parser accept
+    # one, so the buffer has to follow it.
+    target = "/decoded/" + "%61" * 24000
+    want = b"%d decoded" % (len("/decoded/") + 24000)
+    for label, app in (("ASGI", "asgi_app:app"), ("WSGI", "wsgi_app:application")):
+        port = free_port()
+        with Server("--max-header-size", "131072", port=port, app=app) as server:
+            status, _headers, body = server.get(target)
+            is_("%s: a %d-byte escaped path is answered" % (label, len(target)),
+                status, 200)
+            is_("%s: and reaches the application decoded" % label, body, want)
+
+
 def free_threaded_build():
     """True when this binary is linked against a CPython without the GIL."""
     out = subprocess.run([BIN, "--version"], stdout=subprocess.PIPE,
@@ -2137,7 +2158,8 @@ def main():
                  test_wsgi_threads, test_wsgi_streaming, test_access_log,
                  test_wsgi_declared_length, test_wsgi_lazy_start_response,
                  test_metrics, test_body_limit,
-                 test_forwarded, test_root_path, test_multiworker_unix,
+                 test_forwarded, test_root_path, test_long_escaped_path,
+                 test_multiworker_unix,
                  test_worker_restart, test_reload, test_reload_notified,
                  test_graceful_shutdown,
                  test_shutdown_is_bounded, test_free_threaded):
