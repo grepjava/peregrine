@@ -1020,6 +1020,14 @@ func asgiSend(_ token: UInt64, _ tag: UInt64, _ args: PyObj?) -> PyObj? {
         if !worker.pointee.asgiResponseStart(slot, message: message) { return nil }
     } else if n == 18 && equalsExact(t, 18, "http.response.body") {
         if !worker.pointee.asgiResponseBody(slot, message: message) { return nil }
+    } else if n == 27 && equalsExact(t, 27, "http.response.informational") {
+        if !worker.pointee.asgiInformational(slot, message: message, earlyHint: false) {
+            return nil
+        }
+    } else if n == 24 && equalsExact(t, 24, "http.response.early_hint") {
+        if !worker.pointee.asgiInformational(slot, message: message, earlyHint: true) {
+            return nil
+        }
     } else {
         pg_err_set_str(pg_exc_value(), "unsupported ASGI message type")
         return nil

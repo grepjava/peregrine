@@ -20,6 +20,17 @@ version reached PyPI, in UTC.
 
 ## Unreleased
 
+### Added
+
+- ASGI applications can send interim (1xx) responses before
+  `http.response.start`, over HTTP/1.1, HTTP/2 and HTTP/3, while the request
+  body is still arriving. `http.response.early_hint` (the ASGI extension)
+  sends a 103 Early Hints; `http.response.informational`, which is
+  Peregrine's own, sends any status from 102 to 199 with headers of the
+  application's choosing, such as the 104 a resumable upload starts with.
+  Both appear in `scope["extensions"]`, which HTTP/1.1 and HTTP/2 scopes now
+  have. [README](README.md) has the detail.
+
 ### Fixed
 
 - WSGI: `start_response(status, headers, None)` could be called any number

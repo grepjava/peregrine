@@ -214,6 +214,21 @@ A `receive()` made after the response is complete is answered with
 `http.disconnect` rather than parked. The request is over at that point, and a
 task waiting on a body nobody will read holds the connection with it.
 
+Interim (1xx) responses can go out before `http.response.start`, over
+HTTP/1.1, HTTP/2 and HTTP/3, including while the request body is still
+arriving. `http.response.early_hint` is the ASGI extension of that name, a 103
+with one Link field per entry in `links`. `http.response.informational` is
+Peregrine's, for any other status from 102 to 199 with the `headers` given:
+
+```python
+await send({"type": "http.response.informational", "status": 104,
+            "headers": [(b"location", b"/uploads/7")]})
+```
+
+Both are listed in `scope["extensions"]`. 100 and 101 stay the server's, a
+header that frames or belongs to the connection is refused, and to an
+HTTP/1.0 client, which has no interim responses, nothing is sent.
+
 **ASGI 3.0 (WebSocket):** the full connect / accept / receive / send / close
 cycle, subprotocol negotiation, extra handshake headers, fragmented messages,
 text and binary, keepalive ping/pong with a dead-peer timeout, and a message

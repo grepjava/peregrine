@@ -790,9 +790,44 @@ def test_wsgi():
             c.close()
 
 
+def test_informational():
+    print("\nInformational responses")
+    with Server() as server:
+        c = Client(server)
+        # The 104 and the 103 arrive before a byte of the body has been sent.
+        s = c.request(method="POST", path="/interim",
+                      extra=[("content-length", "10")], end=False)
+        deadline = time.monotonic() + 10
+        interim = []
+        while len(interim) < 2 and time.monotonic() < deadline:
+            c.step()
+            interim = [e for e in c.events
+                       if isinstance(e, h2.events.InformationalResponseReceived)
+                       and e.stream_id == s]
+        is_("two interim responses before the body",
+            [dict(e.headers).get(b":status") for e in interim], [b"104", b"103"])
+        if len(interim) == 2:
+            is_("the 104 carries the application's fields, lowercased",
+                interim[0].headers[1:], [(b"location", b"/uploads/7"),
+                                         (b"upload-draft-interop-version", b"9")])
+            is_("the 103 has one link per link", interim[1].headers[1:],
+                [(b"link", b"</a.css>; rel=preload; as=style"),
+                 (b"link", b"</b.js>; rel=preload")])
+        check("the stream is still open for the body", s not in c.ended)
+        c.send_body(s, b"0123456789")
+        status, _, body, _ = c.collect([s])
+        is_("the final response follows", (status.get(s), body.get(s)), (201, b"10"))
+
+        s = c.request(path="/interim-refused?connection")
+        status, _, body, _ = c.collect([s])
+        check("a connection field is refused here too",
+              body.get(s, b"").startswith(b"ValueError: header is not valid"), body.get(s))
+        c.close()
+
+
 def run_all():
     global FAIL
-    for test in (test_basics, test_multiplexing, test_request_bodies,
+    for test in (test_basics, test_multiplexing, test_request_bodies, test_informational,
                  test_flow_control, test_cancellation, test_rapid_reset,
                  test_slow_stream, test_body_limit,
                  test_large_headers,

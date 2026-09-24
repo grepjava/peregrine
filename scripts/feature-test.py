@@ -1939,6 +1939,102 @@ def test_root_path():
             check("and SCRIPT_NAME /api", "SCRIPT_NAME='/api'" in text, text[:300])
 
 
+def read_heads(sock, count):
+    """Reads `count` response heads off the socket, and what came after them."""
+    data = b""
+    while data.count(b"\r\n\r\n") < count:
+        chunk = sock.recv(65536)
+        if not chunk:
+            break
+        data += chunk
+    heads = []
+    for _ in range(count):
+        head, _, data = data.partition(b"\r\n\r\n")
+        lines = head.split(b"\r\n")
+        fields = [tuple(p.strip() for p in line.split(b":", 1)) for line in lines[1:]]
+        heads.append((lines[0], fields))
+    return heads, data
+
+
+def test_informational():
+    print("\nhttp.response.informational and http.response.early_hint")
+    import json
+    port = free_port()
+    with Server(port=port) as server:
+        code, _hdrs, body = server.get("/scope")
+        extensions = json.loads(body).get("extensions", []) if code == 200 else []
+        check("scope advertises http.response.informational",
+              "http.response.informational" in extensions, extensions)
+        check("and http.response.early_hint", "http.response.early_hint" in extensions,
+              extensions)
+
+        # The 104 and the 103 arrive before a byte of the body has been sent.
+        s = server.connect()
+        s.sendall(b"POST /interim HTTP/1.1\r\nHost: x\r\nContent-Length: 10\r\n\r\n")
+        heads, rest = read_heads(s, 2)
+        is_("a 104 arrives before the body is sent", heads[0][0],
+            b"HTTP/1.1 104 Upload Resumption Supported")
+        is_("with the application's fields, lowercased", heads[0][1],
+            [(b"location", b"/uploads/7"), (b"upload-draft-interop-version", b"9")])
+        is_("then a 103", heads[1][0], b"HTTP/1.1 103 Early Hints")
+        is_("with one Link per link", heads[1][1],
+            [(b"link", b"</a.css>; rel=preload; as=style"), (b"link", b"</b.js>; rel=preload")])
+        s.sendall(b"0123456789")
+        s.settimeout(5)
+        tail = rest
+        while b"\r\n\r\n" not in tail:
+            tail += s.recv(65536)
+        check("and the final response follows the body",
+              tail.startswith(b"HTTP/1.1 201 "), tail[:80])
+        s.close()
+
+        # With Expect: 100-continue the server's own 100 goes out as the head
+        # is accepted, and the application's interim responses after it.
+        s = server.connect()
+        s.sendall(b"POST /interim HTTP/1.1\r\nHost: x\r\nContent-Length: 3\r\n"
+                  b"Expect: 100-continue\r\nConnection: close\r\n\r\n")
+        heads, rest = read_heads(s, 3)
+        is_("expect: 100 Continue, then 104 and 103",
+            [h[0].split(b" ")[1] for h in heads], [b"100", b"104", b"103"])
+        s.sendall(b"abc")
+        status, _h, body = read_http_response(_Prefixed(s, rest))
+        is_("expect: the final response counts the body", (status, body), (201, b"3"))
+        s.close()
+
+        # HTTP/1.0 has no interim responses, so nothing is sent for them.
+        s = server.connect()
+        s.sendall(b"POST /interim HTTP/1.0\r\nHost: x\r\nContent-Length: 2\r\n\r\nhi")
+        status, _h, body = read_http_response(s)
+        is_("HTTP/1.0: the first response is the final one", (status, body), (201, b"2"))
+        s.close()
+
+        for case, want in (
+                ("100", b"ValueError: an informational status is 102 to 199;"),
+                ("101", b"ValueError: an informational status is 102 to 199;"),
+                ("200", b"ValueError: an informational status is 102 to 199;"),
+                ("nostatus", b"ValueError: http.response.informational needs a status"),
+                ("connection", b"ValueError: header is not valid on an informational"),
+                ("length", b"ValueError: header is not valid on an informational"),
+                ("pseudo", b"ValueError: header is not valid on an informational"),
+                ("split", b"ValueError: header contains a control character"),
+                ("name", b"ValueError: header name is not a token"),
+                ("after", b"RuntimeError: an informational response after http.response.start")):
+            code, _hdrs, body = server.get("/interim-refused?" + case)
+            check("refused: %s" % case, code == 200 and body.startswith(want), body[:120])
+
+
+class _Prefixed:
+    """A socket with some bytes already read off it."""
+    def __init__(self, sock, data):
+        self.sock, self.data = sock, data
+
+    def recv(self, n):
+        if self.data:
+            out, self.data = self.data[:n], self.data[n:]
+            return out
+        return self.sock.recv(n)
+
+
 def test_long_escaped_path():
     print("\nescaped paths longer than 64 KiB")
     # The decode buffer used to be a fixed 64 KiB, and a longer path reached
@@ -2159,6 +2255,7 @@ def main():
                  test_wsgi_declared_length, test_wsgi_lazy_start_response,
                  test_metrics, test_body_limit,
                  test_forwarded, test_root_path, test_long_escaped_path,
+                 test_informational,
                  test_multiworker_unix,
                  test_worker_restart, test_reload, test_reload_notified,
                  test_graceful_shutdown,

@@ -27,7 +27,7 @@ import time
 try:
     from aioquic.asyncio.client import connect
     from aioquic.asyncio.protocol import QuicConnectionProtocol
-    from aioquic.h3.connection import H3Connection
+    from aioquic.h3.connection import H3Connection, HeadersState
     from aioquic.h3.events import DataReceived, HeadersReceived
     from aioquic.quic.configuration import QuicConfiguration
     from aioquic.quic.events import ConnectionTerminated
@@ -149,12 +149,33 @@ class Server:
         self.stop()
 
 
+class InterimH3Connection(H3Connection):
+    """aioquic 1.3 reads a second HEADERS frame as trailers and refuses a
+    third, so a 1xx followed by the response fails. RFC 9114 section 4.1
+    allows any number of interim responses first; after one, the stream is
+    put back to waiting for its response."""
+
+    def _handle_request_or_push_frame(self, frame_type, frame_data, stream, stream_ended):
+        events = super()._handle_request_or_push_frame(frame_type, frame_data, stream,
+                                                       stream_ended)
+        for event in events:
+            if isinstance(event, HeadersReceived) and is_interim(event.headers):
+                stream.headers_recv_state = HeadersState.INITIAL
+        return events
+
+
+def is_interim(headers):
+    return any(name == b":status" and value.startswith(b"1") for name, value in headers)
+
+
 class Client(QuicConnectionProtocol):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self._http = H3Connection(self._quic)
+        self._http = InterimH3Connection(self._quic)
         self._events = {}
         self._waiters = {}
+        # 1xx responses by stream, kept apart from the response they precede.
+        self.interim = {}
         # The last CONNECTION_CLOSE, for the tests that expect one.
         self.terminated = None
 
@@ -193,7 +214,9 @@ class Client(QuicConnectionProtocol):
         if isinstance(event, ConnectionTerminated):
             self.terminated = event
         for http_event in self._http.handle_event(event):
-            if isinstance(http_event, (HeadersReceived, DataReceived)):
+            if isinstance(http_event, HeadersReceived) and is_interim(http_event.headers):
+                self.interim.setdefault(http_event.stream_id, []).append(http_event.headers)
+            elif isinstance(http_event, (HeadersReceived, DataReceived)):
                 sid = http_event.stream_id
                 if sid in self._events:
                     self._events[sid].append(http_event)
@@ -450,6 +473,42 @@ async def request_bodies():
             status, _, body = await client.request("GET", "/")
             is_("the connection still works afterwards", (status, body),
                 (200, b"hello from peregrine asgi\n"))
+
+
+async def informational():
+    print("\nInformational responses")
+    with Server() as server:
+        async with connect("127.0.0.1", server.port, configuration=configuration(),
+                           create_protocol=Client) as client:
+            # The 104 and the 103 arrive before a byte of the body has been sent.
+            sid = client.start("POST", "/interim", headers=[(b"content-length", b"10")],
+                               end_stream=False)
+            deadline = time.monotonic() + 10
+            while len(client.interim.get(sid, [])) < 2 and time.monotonic() < deadline:
+                await asyncio.sleep(0.02)
+            interim = client.interim.get(sid, [])
+            is_("two interim responses before the body",
+                [dict(h).get(b":status") for h in interim], [b"104", b"103"])
+            if len(interim) == 2:
+                is_("the 104 carries the application's fields, lowercased", interim[0][1:],
+                    [(b"location", b"/uploads/7"), (b"upload-draft-interop-version", b"9")])
+                is_("the 103 has one link per link", interim[1][1:],
+                    [(b"link", b"</a.css>; rel=preload; as=style"),
+                     (b"link", b"</b.js>; rel=preload")])
+            client.send_body(sid, b"0123456789", end_stream=True)
+            status, _, body = await client.collect(sid)
+            is_("the final response follows", (status, body), (201, b"10"))
+
+            _, _, body = await client.request("GET", "/interim-refused?length")
+            check("a length field is refused here too",
+                  body.startswith(b"ValueError: header is not valid"), body)
+
+            status, _, body = await client.request("GET", "/scope")
+            import json
+            extensions = json.loads(body).get("extensions", []) if status == 200 else []
+            is_("HTTP/3 advertises WebTransport and both interim messages",
+                sorted(extensions), ["http.response.early_hint",
+                                     "http.response.informational", "webtransport"])
 
 
 async def multiplexing():
@@ -914,7 +973,7 @@ async def main():
         return 0
     print("peregrine HTTP/3 tests (%s)" % BIN)
 
-    for test in (basics, hsts, health_check, static_files, congestion, compression, request_bodies, multiplexing, cancellation, rapid_reset,
+    for test in (basics, hsts, health_check, static_files, congestion, compression, request_bodies, informational, multiplexing, cancellation, rapid_reset,
                  spoofed_address, large_headers, response_framing, flow_control, long_lived,
                  key_update, wsgi, alt_svc):
         try:

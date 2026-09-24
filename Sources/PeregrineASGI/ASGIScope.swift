@@ -27,6 +27,10 @@ public struct ASGIScopeBuilder {
     @usableFromInline var lifespanState: PyObj?
     /// `{"webtransport": {}}` as a mappingproxy, interned for the worker.
     @usableFromInline var webtransportExtensions: PyObj?
+    /// The informational and early-hint extensions, for an HTTP request.
+    @usableFromInline var httpExtensions: PyObj?
+    /// Those and WebTransport, for an HTTP/3 request.
+    @usableFromInline var http3Extensions: PyObj?
 
     public init?(scheme: UnsafePointer<CChar>,
                  rootPath: UnsafePointer<CChar>,
@@ -41,6 +45,8 @@ public struct ASGIScopeBuilder {
         // mapping under --free-threaded, and a failed init must not drop it.
         self.lifespanState = nil
         self.webtransportExtensions = nil
+        self.httpExtensions = nil
+        self.http3Extensions = nil
 
         self.root = RootPath(rootPath)
 
@@ -82,19 +88,27 @@ public struct ASGIScopeBuilder {
             pg_err_clear()
         }
 
-        // Shared across every HTTP/3 / WebTransport scope. Both dicts are
-        // wrapped so `scope["extensions"]["webtransport"]["x"] = 1` cannot
-        // mutate the interned object every later request would see.
-        guard let extensions = pg_dict_new(), let empty = pg_dict_new() else { return nil }
-        defer {
-            pg_decref(empty)
-            pg_decref(extensions)
-        }
+        // Shared across every scope that carries them. Every dict is wrapped
+        // so `scope["extensions"]["webtransport"]["x"] = 1` cannot mutate the
+        // interned object every later request would see.
+        guard let empty = pg_dict_new() else { return nil }
+        defer { pg_decref(empty) }
         guard let emptyProxy = pg_mapping_proxy(empty) else { return nil }
         defer { pg_decref(emptyProxy) }
-        guard pg_dict_set(extensions, Interned[.vWebTransport], emptyProxy) == 0,
-              let extProxy = pg_mapping_proxy(extensions) else { return nil }
-        self.webtransportExtensions = extProxy
+        func extensions(_ keys: [PyKey]) -> PyObj? {
+            guard let d = pg_dict_new() else { return nil }
+            defer { pg_decref(d) }
+            for key in keys where pg_dict_set(d, Interned[key], emptyProxy) != 0 { return nil }
+            return pg_mapping_proxy(d)
+        }
+        guard let wt = extensions([.vWebTransport]) else { return nil }
+        self.webtransportExtensions = wt
+        guard let http = extensions([.vHTTPResponseInformational, .vHTTPResponseEarlyHint])
+        else { return nil }
+        self.httpExtensions = http
+        guard let h3 = extensions([.vWebTransport, .vHTTPResponseInformational,
+                                   .vHTTPResponseEarlyHint]) else { return nil }
+        self.http3Extensions = h3
         if let shared = lifespanState {
             pg_incref(shared)
             self.lifespanState = shared
@@ -107,6 +121,8 @@ public struct ASGIScopeBuilder {
         headerNames.destroy()
         if let s = lifespanState { pg_decref(s) }
         if let e = webtransportExtensions { pg_decref(e) }
+        if let e = httpExtensions { pg_decref(e) }
+        if let e = http3Extensions { pg_decref(e) }
     }
 
     /// Builds the scope for one request. Returns an owned reference.
@@ -168,14 +184,15 @@ public struct ASGIScopeBuilder {
             pg_decref(scope); return nil
         }
 
-        // Advertise on the session itself, and on ordinary HTTP/3 requests so
-        // an application can feature-detect without waiting for a CONNECT.
-        // HTTP/1.1 and HTTP/2 never carry WebTransport.
-        if webtransport || http3 {
-            if let ext = webtransportExtensions,
-               pg_dict_set(scope, Interned[.extensions], ext) != 0 {
-                pg_decref(scope); return nil
-            }
+        // WebTransport is advertised on the session itself, and on ordinary
+        // HTTP/3 requests so an application can feature-detect without waiting
+        // for a CONNECT; HTTP/1.1 and HTTP/2 never carry it. Informational
+        // responses belong to every HTTP request, and to no session.
+        let ext = webtransport ? webtransportExtensions
+            : websocket ? nil
+            : http3 ? http3Extensions : httpExtensions
+        if let ext, pg_dict_set(scope, Interned[.extensions], ext) != 0 {
+            pg_decref(scope); return nil
         }
 
         // method

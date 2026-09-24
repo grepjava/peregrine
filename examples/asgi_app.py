@@ -320,6 +320,55 @@ async def app(scope, receive, send):
             except asyncio.CancelledError:
                 pass
 
+    elif path == "/interim":
+        # Interim responses go out before the body is read, which is what a
+        # 104 is for: the client learns where to resume while still sending.
+        await send({"type": "http.response.informational", "status": 104,
+                    "headers": [(b"Location", b"/uploads/7"),
+                                (b"upload-draft-interop-version", b"9")]})
+        await send({"type": "http.response.early_hint",
+                    "links": [b"</a.css>; rel=preload; as=style", b"</b.js>; rel=preload"]})
+        size = 0
+        while True:
+            message = await receive()
+            if message["type"] == "http.disconnect":
+                return
+            size += len(message.get("body", b""))
+            if not message.get("more_body", False):
+                break
+        await reply(b"%d" % size, status=201)
+
+    elif path == "/interim-refused":
+        # Each of these is refused, and the refusal is the answer.
+        bad = {
+            "100": {"status": 100},
+            "101": {"status": 101},
+            "200": {"status": 200},
+            "nostatus": {},
+            "connection": {"status": 104, "headers": [(b"connection", b"close")]},
+            "length": {"status": 104, "headers": [(b"content-length", b"3")]},
+            "pseudo": {"status": 104, "headers": [(b":status", b"200")]},
+            "split": {"status": 104, "headers": [(b"x-a", b"1\r\nx-b: 2")]},
+            "name": {"status": 104, "headers": [(b"bad name", b"1")]},
+        }
+        case = scope["query_string"].decode()
+        if case == "after":
+            await send({"type": "http.response.start", "status": 200,
+                        "headers": [(b"content-type", b"text/plain")]})
+            try:
+                await send({"type": "http.response.informational", "status": 104})
+                text = b"sent"
+            except RuntimeError as exc:
+                text = b"RuntimeError: %s" % str(exc).encode()
+            await send({"type": "http.response.body", "body": text})
+            return
+        try:
+            await send(dict(bad[case], type="http.response.informational"))
+            text = b"sent"
+        except ValueError as exc:
+            text = b"ValueError: %s" % str(exc).encode()
+        await reply(text)
+
     elif path.startswith("/decoded/"):
         await reply(b"%d %s" % (len(path), b"escaped" if "%" in path else b"decoded"))
 

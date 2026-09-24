@@ -32,7 +32,7 @@ public enum PyKey: Int, CaseIterable {
     // --- ASGI message keys ---
     case body, moreBody, status, trailers
     case text, bytesKey, subprotocol, subprotocols, code, reason
-    case data, stream, moreData, endStream, bidirectional
+    case data, stream, moreData, endStream, bidirectional, links
 
     // --- ASGI values ---
     case vHTTP, vWebsocket, vLifespan
@@ -40,6 +40,7 @@ public enum PyKey: Int, CaseIterable {
     case vHTTPS
     case vHTTPRequest, vHTTPDisconnect
     case vHTTPResponseStart, vHTTPResponseBody
+    case vHTTPResponseInformational, vHTTPResponseEarlyHint
     case vLifespanStartup, vLifespanStartupComplete, vLifespanStartupFailed
     case vLifespanShutdown, vLifespanShutdownComplete, vLifespanShutdownFailed
     case message
@@ -75,13 +76,14 @@ private let keyNames: [StaticString] = [
 
     "body", "more_body", "status", "trailers",
     "text", "bytes", "subprotocol", "subprotocols", "code", "reason",
-    "data", "stream", "more_data", "end_stream", "bidirectional",
+    "data", "stream", "more_data", "end_stream", "bidirectional", "links",
 
     "http", "websocket", "lifespan",
     "3.0", "2.3", "1.1", "1.0", "2", "3",
     "https",
     "http.request", "http.disconnect",
     "http.response.start", "http.response.body",
+    "http.response.informational", "http.response.early_hint",
     "lifespan.startup", "lifespan.startup.complete", "lifespan.startup.failed",
     "lifespan.shutdown", "lifespan.shutdown.complete", "lifespan.shutdown.failed",
     "message",
