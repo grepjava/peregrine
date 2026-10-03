@@ -92,6 +92,19 @@ version reached PyPI, in UTC.
   send could not get it back, though `on_complete` had already run. It is
   now remembered just before the last send.
 
+### Changed
+
+- `--cache-size` with `--compress`: a cached response was compressed again
+  for every client that accepted a coding. Each worker now keeps the
+  compressed form beside the body it came from, and uses it only while the
+  cached body is byte-for-byte the same, so expiry and invalidation behave
+  as before. On the benchmark machine (2 workers, gzip), cached hits on
+  highly compressible text went from 43,500 to 158,000 requests/s at 4 KiB,
+  6,200 to 107,000 at 64 KiB, and 15,600 to 111,000 at 16 KiB over HTTP/2;
+  uncompressed hits are unchanged. Less compressible bodies gain less, but
+  the per-hit compression is gone either way. It costs at most an eighth of
+  `--cache-size`, up to 8 MiB, per worker.
+
 ---
 
 ## 1.1.7 — 2026-09-20
