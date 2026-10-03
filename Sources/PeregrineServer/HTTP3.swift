@@ -532,6 +532,7 @@ extension Worker {
             }
         }
 
+        var stalled = false
         while true {
             let available = stream.receive.ready.readableBytes
             if available == 0 { break }
@@ -539,8 +540,19 @@ extension Worker {
 
             // Mid-frame: DATA continues into whatever arrived.
             if let s, s.pointee.h3FrameRemaining > 0 {
-                let take = min(s.pointee.h3FrameRemaining, available)
+                var take = min(s.pointee.h3FrameRemaining, available)
                 if s.pointee.h3FrameType == HTTP3FrameType.data {
+                    // An ASGI application reads at its own pace. What it has
+                    // not read stays in the QUIC stream, where it holds the
+                    // window shut, so a body that goes unread stops the peer
+                    // at the high-water mark, as on the other two protocols.
+                    // WSGI is handed the whole body at once and is bounded
+                    // by maxBodySize instead.
+                    if s.pointee.state == .dispatching {
+                        let room = config.bodyHighWaterMark - s.pointee.body.readableBytes
+                        if room <= 0 { stalled = true; break }
+                        take = min(take, room)
+                    }
                     if !appendH3Body(streamSlot, stream.receive.ready.readPointer, take) {
                         return
                     }
@@ -633,7 +645,12 @@ extension Worker {
             }
         }
 
-        if stream.receive.finished && streamSlot >= 0 {
+        if stalled {
+            // Before onBodyProgress: delivering to a parked receive() empties
+            // the buffer and resumes from h3ResumeBody.
+            table[streamSlot].pointee.flags.insert(.h3BodyStalled)
+            onBodyProgress(streamSlot)
+        } else if stream.receive.finished && streamSlot >= 0 {
             let s = table[streamSlot]
             if s.pointee.h3FrameRemaining > 0 {
                 h3.quic.close(HTTP3Error.frameError, application: true)
@@ -652,10 +669,27 @@ extension Worker {
         } else if streamSlot >= 0 {
             onBodyProgress(streamSlot)
         }
-        // Reading is what opens the window again.
+        // Reading is what opens the window again: only what has been taken
+        // out of the stream counts, not what has merely arrived.
         if streamSlot >= 0 {
-            h3.quic.extendStreamWindow(streamID, consumed: stream.receive.received)
+            h3.quic.extendStreamWindow(
+                streamID,
+                consumed: stream.receive.received - UInt64(stream.receive.ready.readableBytes))
         }
+    }
+
+    /// Takes up the DATA a request stream left in the QUIC stream once the
+    /// application has read enough of its body to make room.
+    mutating func h3ResumeBody(_ streamSlot: Int) {
+        let s = table[streamSlot]
+        guard s.pointee.isH3Stream, s.pointee.flags.contains(.h3BodyStalled),
+              s.pointee.body.readableBytes < config.bodyHighWaterMark else { return }
+        s.pointee.flags.remove(.h3BodyStalled)
+        let parent = Int(s.pointee.parentSlot)
+        guard parent >= 0, table[parent].pointee.state == .http3,
+              let h3 = table[parent].pointee.h3 else { return }
+        readRequestStream(parent, h3, s.pointee.qstreamID)
+        if table[parent].pointee.state == .http3 { flushQUIC(parent) }
     }
 
     private mutating func appendH3Body(_ streamSlot: Int,

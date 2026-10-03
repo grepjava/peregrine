@@ -110,6 +110,10 @@ public struct ConnFlags: OptionSet, Sendable {
     /// what is cached for it. `Connection.cacheMark` says which target.
     public static let invalidatesCache = ConnFlags(rawValue: 1 << 20)
 
+    /// HTTP/3: DATA was left in the QUIC stream because the application had
+    /// a high-water mark of body unread. Its next read takes up the rest.
+    public static let h3BodyStalled    = ConnFlags(rawValue: 1 << 21)
+
     /// Everything that describes one request rather than the connection.
     /// Cleared when a keep-alive connection starts its next request; missing
     /// one of these here would leak state across a pipelined request.

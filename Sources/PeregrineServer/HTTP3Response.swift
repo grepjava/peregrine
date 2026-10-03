@@ -378,6 +378,8 @@ extension Worker {
             c.pointee.body.clear()
             releaseDrainWaiter(slot)
             releasePendingReceive(slot)
+            // Whatever was held back for the application is now dropped too.
+            h3ResumeBody(slot)
             return
         }
         h3.quic.stopSending(c.pointee.qstreamID, code: HTTP3Error.noError)

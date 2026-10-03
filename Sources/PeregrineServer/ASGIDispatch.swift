@@ -516,6 +516,7 @@ extension Worker {
         pg_decref(future)
         updateBodyReadInterest(slot)
         h2FlushWindowUpdates(slot)
+        h3ResumeBody(slot)
     }
 
     /// Builds the next ASGI receive message, or nil when nothing is ready.
@@ -1067,6 +1068,7 @@ func asgiReceive(_ token: UInt64, _ tag: UInt64, _ args: PyObj?) -> PyObj? {
         // Taking the buffered bytes is what makes room for the next read.
         worker.pointee.updateBodyReadInterest(slot)
         worker.pointee.h2FlushWindowUpdates(slot)
+        worker.pointee.h3ResumeBody(slot)
         return PyImmediate.make(ready)
     }
 

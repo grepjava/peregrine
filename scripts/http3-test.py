@@ -749,6 +749,19 @@ async def flow_control():
             is_("a drip-fed body reassembles in order",
                 (status, len(body), body == total), (200, len(total), True))
 
+            # An application that is not reading holds the window shut. The
+            # credit once followed arrival, so a 2 MiB upload was taken whole
+            # while the application slept, past the 256 KiB high-water mark.
+            size = 2 * 1024 * 1024
+            stream_id = client.start("POST", "/slowsink?1.5", body=b"s" * size)
+            await asyncio.sleep(1.0)
+            taken = client._quic._streams[stream_id].sender._buffer_start
+            check("an unread body stops the peer near the high-water mark "
+                  "(%d bytes taken)" % taken, taken < 1024 * 1024, str(taken))
+            status, _, body = await client.collect(stream_id, timeout=30.0)
+            is_("and the rest arrives once the application reads",
+                (status, body), (200, b"%d\n" % size))
+
 
 async def wsgi():
     """A WSGI application over HTTP/3.

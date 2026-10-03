@@ -61,6 +61,11 @@ version reached PyPI, in UTC.
 - HTTP/2: padded DATA frames used up stream window that was never given back.
   A client could stall a stream with padding alone. The padding is now
   credited back at once.
+- HTTP/3: request body credit followed arrival rather than the application,
+  so an ASGI application that was slow to read, or never read, let a client
+  send its whole body (up to `--max-body`) into memory. Unread DATA now stays
+  in the QUIC stream once the high-water mark is buffered, holding the window
+  shut until the application reads, as on HTTP/1.1 and HTTP/2.
 
 ---
 
