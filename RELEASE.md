@@ -66,6 +66,14 @@ version reached PyPI, in UTC.
   send its whole body (up to `--max-body`) into memory. Unread DATA now stays
   in the QUIC stream once the high-water mark is buffered, holding the window
   shut until the application reads, as on HTTP/1.1 and HTTP/2.
+- `peregrine.webtransport`: a session kept every stream it had ever carried,
+  so a long-lived session grew with its lifetime stream count. A stream is
+  now forgotten once its end has been read and it is no longer writable.
+  References the application holds keep working.
+- `peregrine.contrib.uploads`: the completion answer was remembered only
+  after its last byte was sent, so a client that disconnected during that
+  send could not get it back, though `on_complete` had already run. It is
+  now remembered just before the last send.
 
 ---
 

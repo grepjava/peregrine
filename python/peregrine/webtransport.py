@@ -91,6 +91,7 @@ class WebTransportStream:
         if chunk is _END:
             self._eof = True
             await self.session._maybe_resume(self)
+            self.session._retire(self)
             return None
         await self.session._maybe_resume(self)
         return chunk
@@ -136,6 +137,7 @@ class WebTransportStream:
         })
         if end:
             self._ended = True
+            self.session._retire(self)
 
     async def end(self):
         """Finishes this direction without sending anything more."""
@@ -321,6 +323,18 @@ class WebTransportSession:
             # Nothing will ever arrive on a unidirectional stream we opened.
             stream._eof = True
         return stream
+
+    def _retire(self, stream):
+        """Forgets a stream once both of its directions are over.
+
+        The registry exists to route arriving bytes, and nothing more can
+        arrive on a stream whose end has been read. Keeping it would grow a
+        long-lived session with every stream it ever carried. Any reference
+        the application still holds keeps working.
+        """
+        if stream.at_eof and not stream.writable \
+                and self._streams.get(stream.id) is stream:
+            del self._streams[stream.id]
 
     async def _on_stream_data(self, message):
         stream_id = message["stream"]

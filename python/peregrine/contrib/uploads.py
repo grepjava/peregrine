@@ -1033,8 +1033,21 @@ class _Service:
     async def deliver(self, request, answer, extra, info):
         """Sends what `on_complete` answered, remembering it on its way out,
         so a client whose connection dies before it arrives can ask again."""
-        kept = {"status": 200, "type": None, "location": None, "body": [], "size": 0}
+        kept = {"status": 200, "type": None, "location": None, "body": [], "size": 0,
+                "remembered": False}
         send = request._send
+
+        def remember():
+            kept["remembered"] = True
+            if kept["size"] > _REMEMBERED_LIMIT:
+                _LOG.warning("the answer to upload %s is over %d bytes and is not remembered",
+                             info.id, _REMEMBERED_LIMIT)
+                return
+            try:
+                self.store.remember(info.id, kept["status"], kept["type"], kept["location"],
+                                    b"".join(kept["body"]), info.created_at)
+            except OSError:
+                _LOG.exception("could not remember the answer to upload %s", info.id)
 
         async def capture(message):
             kind = message.get("type")
@@ -1055,6 +1068,13 @@ class _Service:
                 kept["size"] += len(chunk)
                 if kept["size"] <= _REMEMBERED_LIMIT:
                     kept["body"].append(chunk)
+                # The whole answer is known before its last piece is sent, and
+                # that send is the one most likely to find the client gone.
+                # Remembering after it would lose the answer exactly when it
+                # is needed. A send that fails earlier leaves only a prefix,
+                # which is not remembered.
+                if not message.get("more_body", False) and not kept["remembered"]:
+                    remember()
             await send(message)
 
         if callable(answer):
@@ -1064,15 +1084,8 @@ class _Service:
             status, headers, body = _answer_parts(answer)
             request._send = capture
             await request.respond(status, headers, body)
-        if kept["size"] > _REMEMBERED_LIMIT:
-            _LOG.warning("the answer to upload %s is over %d bytes and is not remembered",
-                         info.id, _REMEMBERED_LIMIT)
-            return
-        try:
-            self.store.remember(info.id, kept["status"], kept["type"], kept["location"],
-                                b"".join(kept["body"]), info.created_at)
-        except OSError:
-            _LOG.exception("could not remember the answer to upload %s", info.id)
+        if not kept["remembered"]:
+            remember()
 
     # --- offset, limits, cancellation
 

@@ -468,6 +468,39 @@ async def test_per_stream_backpressure():
           channel.sent)
     await session._stop()
 
+    # A long-lived session carries many streams in turn. Each is forgotten
+    # once both directions are over, or the session grows with every stream
+    # it has ever had.
+    channel = Channel([{"type": "webtransport.connect"}])
+    session = WebTransportSession(SCOPE, channel.receive, channel.send)
+    await session.accept()
+    for i in range(200):
+        channel.inbox.put_nowait({
+            "type": "webtransport.stream.receive",
+            "stream": i * 4, "data": b"x", "more_data": False,
+        })
+        stream = await asyncio.wait_for(session.accept_stream(), 5)
+        await asyncio.wait_for(stream.read(), 5)
+        await stream.end()
+    is_("finished streams are not kept by the session", len(session._streams), 0)
+    channel.inbox.put_nowait({
+        "type": "webtransport.stream.receive",
+        "stream": 4000, "data": b"half", "more_data": False,
+    })
+    half = await asyncio.wait_for(session.accept_stream(), 5)
+    await asyncio.wait_for(half.read(), 5)
+    check("a stream still open for writing is kept", 4000 in session._streams)
+    await half.send(b"reply", end=True)
+    check("until it is ended", 4000 not in session._streams)
+    channel.inbox.put_nowait({
+        "type": "webtransport.stream.receive",
+        "stream": 4002, "data": b"uni", "more_data": False,
+    })
+    uni = await asyncio.wait_for(session.accept_stream(), 5)
+    is_("a peer's unidirectional stream reads", await asyncio.wait_for(uni.read(), 5), b"uni")
+    check("and is forgotten at its end", 4002 not in session._streams)
+    await session._stop()
+
 
 def test_as_bytes():
     print("\nBytes coercion")
@@ -634,6 +667,27 @@ async def _uploads_asgi(u):
                                                    root_path="/api/"), b"x")
         check("a root_path ending in a slash does not double it",
               headers.get(b"location", b"").startswith(b"/api/uploads/"), headers)
+
+        # The completion has run by the time its answer is sent, so a client
+        # that loses the answer has to be able to ask again. The last send is
+        # the one most likely to find the client gone.
+        def completed_since(before):
+            return [n[:-5] for n in set(os.listdir(directory)) - before
+                    if n.endswith(".info")]
+        for fail_on, kept in (("http.response.body", True), ("http.response.start", False)):
+            before = set(os.listdir(directory))
+            try:
+                await call(app, scope("POST", "/files", [("upload-complete", "?1")]),
+                           b"xyz", fail_on=fail_on)
+            except RuntimeError:
+                pass
+            new = completed_since(before)
+            answer = store.answer(new[0]) if len(new) == 1 else None
+            if kept:
+                is_("an answer whose last send fails is still remembered",
+                    (answer.status, answer.body) if answer else None, (201, b"done"))
+            else:
+                is_("one that never got as far as its last send is not", answer, None)
     finally:
         shutil.rmtree(directory, ignore_errors=True)
 
