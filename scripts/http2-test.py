@@ -367,6 +367,26 @@ def test_flow_control():
             len(body.get(s2, b"")), len(payload))
         c.close()
 
+        # Padding is spent window that no application reads, so it has to
+        # come back without one. A window's worth of padding-only frames once
+        # left the stream unable to carry a single byte of body.
+        c = Client(server)
+        s = c.request(method="POST", path="/echo", end=False)
+        c.step(timeout=0.1)
+        for _ in range(2048):
+            c.conn.send_data(s, b"", pad_length=255, end_stream=False)
+            if c.conn.local_flow_control_window(s) < 256:
+                c.flush()
+                c.step(timeout=0.5)
+                if c.conn.local_flow_control_window(s) < 256:
+                    break
+        c.flush()
+        c.send_body(s, b"after the padding")
+        status, _, body, _ = c.collect([s])
+        is_("padding-only DATA does not use up the stream window",
+            (status.get(s), body.get(s)), (200, b"after the padding"))
+        c.close()
+
         # One SETTINGS frame may change INITIAL_WINDOW_SIZE more than once, and
         # each value applies in turn to the streams already open, not just the
         # last. The h2 library never sends that, so these frames are made here.
@@ -766,6 +786,41 @@ def test_wsgi():
             status, _, body, _ = c.collect([s], deadline=30.0)
             is_("a body larger than the window round trips (%s)" % label,
                 (status.get(s), body.get(s) == big), (200, True))
+
+            # Larger than the whole stream window, which is the body high-water
+            # mark. WSGI consumes nothing until the stream ends, so the credit
+            # has to come back as the bytes arrive, or the upload stops at the
+            # window and is never answered.
+            huge = bytes(i % 253 for i in range(700000))
+            s = c.request(method="POST", path="/echo", body=huge)
+            status, _, body, _ = c.collect([s], deadline=30.0)
+            is_("a body past the whole stream window round trips (%s)" % label,
+                (status.get(s), body.get(s) == huge), (200, True))
+
+            # Two at once, interleaved frame by frame.
+            a = c.request(method="POST", path="/echo",
+                          extra=[("content-length", str(len(huge)))], end=False)
+            b = c.request(method="POST", path="/echo",
+                          extra=[("content-length", str(len(huge)))], end=False)
+            sent = {a: 0, b: 0}
+            deadline = time.monotonic() + 30
+            while min(sent.values()) < len(huge) and time.monotonic() < deadline:
+                moved = False
+                for sid in (a, b):
+                    window = min(c.conn.local_flow_control_window(sid),
+                                 c.conn.max_outbound_frame_size, len(huge) - sent[sid])
+                    if window > 0:
+                        c.conn.send_data(sid, huge[sent[sid]:sent[sid] + window],
+                                         end_stream=sent[sid] + window == len(huge))
+                        sent[sid] += window
+                        moved = True
+                c.flush()
+                if not moved:
+                    c.step(timeout=0.2)
+            status, _, body, _ = c.collect([a, b], deadline=30.0)
+            is_("two interleaved uploads past the window both complete (%s)" % label,
+                (status.get(a), body.get(a) == huge, status.get(b), body.get(b) == huge),
+                (200, True, 200, True))
 
             s = c.request(method="POST", path="/echo")
             status, _, body, _ = c.collect([s])

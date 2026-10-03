@@ -53,6 +53,14 @@ version reached PyPI, in UTC.
 - With `--max-header-size` above 64 KiB, an escaped request path longer than
   64 KiB reached the application undecoded in `scope["path"]` and
   `PATH_INFO`. The decode buffer now grows with the head limit.
+- HTTP/2: a WSGI upload larger than the stream window (256 KiB)
+  stopped at the window and was never answered, inline
+  and pooled alike. WSGI reads nothing until the body is whole, so the
+  window is now refreshed as the bytes arrive, still bounded by
+  `--max-body`.
+- HTTP/2: padded DATA frames used up stream window that was never given back.
+  A client could stall a stream with padding alone. The padding is now
+  credited back at once.
 
 ---
 

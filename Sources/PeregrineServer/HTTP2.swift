@@ -291,6 +291,11 @@ extension Worker {
             return
         }
 
+        // The pad length byte and the padding are spent window that no
+        // application will ever read, so they are given back at once.
+        // Otherwise a peer can drain the stream window without sending a body.
+        s.pointee.pendingRecvUpdate += header.length - length
+
         // The response can be finished while the request is still arriving.
         // The stream stays open so that the rest of the upload is still
         // checked and still counted against the window; the bytes themselves
@@ -347,6 +352,18 @@ extension Worker {
             s.pointee.pendingRecvUpdate += length
             h2FlushWindowUpdates(streamSlot)
             return
+        }
+        // WSGI is called with the whole body, so nothing consumes it until
+        // the stream ends. Waiting for consumption would stall any upload
+        // larger than the window. The credit goes back as the bytes arrive
+        // instead, and maxBodySize, checked cumulatively above, bounds the
+        // buffer, as it does for a WSGI request over HTTP/1.
+        if appProtocol == .wsgi && s.pointee.state == .readingBody {
+            s.pointee.pendingRecvUpdate += length
+        }
+        if s.pointee.pendingRecvUpdate > 0 {
+            h2FlushWindowUpdates(streamSlot)
+            if table[slot].pointee.state != .http2 { return }
         }
         onBodyProgress(streamSlot)
         // A WSGI application dispatched by that call has already produced its
