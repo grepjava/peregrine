@@ -21,6 +21,8 @@ import AvianQUIC
 public final class QUICListener {
     /// How many datagrams to take from the socket per syscall.
     static let batchSize = 32
+    /// Batches read per readiness event; see `readable`.
+    static let batchesPerTurn = 8
     /// The largest datagram we will accept or send. Anything larger is a
     /// packet the path could not have carried intact.
     static let datagramSize = 1500
@@ -100,7 +102,11 @@ public final class QUICListener {
     @discardableResult
     public func readable(nowMs: UInt64) -> Int {
         var total = 0
-        while true {
+        // A bounded turn: under sustained load every batch comes back full,
+        // and draining until one does not would keep the worker from its
+        // applications and timers indefinitely. The poller is level-triggered,
+        // so whatever is left is picked up on the next turn.
+        for _ in 0..<QUICListener.batchesPerTurn {
             let n = Int(av_udp_recv_batch(fd, receiveBuffer, QUICListener.datagramSize,
                                           messages, Int32(QUICListener.batchSize)))
             if n <= 0 { break }

@@ -1184,7 +1184,13 @@ public struct Worker {
                 c.pointee.flags.remove(.keepAlive)
             }
         }
-        c.pointee.body.clear()
+        // A large WSGI upload is buffered whole; like a large response, it
+        // must not pin its allocation on an idle keep-alive connection.
+        if c.pointee.body.allocatedCapacity > config.readBufferSize * 4 {
+            c.pointee.body.destroy()
+        } else {
+            c.pointee.body.clear()
+        }
         if !c.pointee.flags.contains(.keepAlive) || c.pointee.flags.contains(.peerClosed) {
             closeConnection(slot)
             return

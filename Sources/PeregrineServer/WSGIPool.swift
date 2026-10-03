@@ -186,7 +186,10 @@ public final class WSGIPool {
     /// Signalled when the loop has drained part of a job's output.
     private let drainCond: OpaquePointer
 
-    private var pending: [WSGIJob] = []
+    /// A FIFO: `pendingHead` is the next job to run. Taking from the front
+    /// of an array would shift the whole backlog under the mutex every time.
+    private var pending: [WSGIJob?] = []
+    private var pendingHead = 0
     private var ready: [WSGIJob] = []
     private var stopping = false
     private var liveThreads = 0
@@ -351,16 +354,27 @@ public final class WSGIPool {
     fileprivate func runThread() {
         while true {
             av_mutex_lock(mutex)
-            while pending.isEmpty && !stopping {
+            while pendingHead == pending.count && !stopping {
                 av_cond_wait(workCond, mutex)
             }
-            if pending.isEmpty {
+            if pendingHead == pending.count {
                 // Only reachable when stopping.
                 liveThreads -= 1
                 av_mutex_unlock(mutex)
                 return
             }
-            let job = pending.removeFirst()
+            let job = pending[pendingHead]!
+            pending[pendingHead] = nil
+            pendingHead += 1
+            if pendingHead == pending.count {
+                pending.removeAll(keepingCapacity: true)
+                pendingHead = 0
+            } else if pendingHead >= 64 && pendingHead * 2 >= pending.count {
+                // Compacted only once the taken half outweighs the rest, so
+                // each job is moved a bounded number of times.
+                pending.removeFirst(pendingHead)
+                pendingHead = 0
+            }
             av_mutex_unlock(mutex)
             execute(job)
         }
