@@ -1226,6 +1226,8 @@ public enum Peregrine {
 
             if n > 0 { worker.pointee.processEvents(n) }
             worker.pointee.quicTick()
+            // QUIC acknowledgements processed by the tick can drain a stream.
+            if !worker.pointee.parkedWSGIQueue.isEmpty { worker.pointee.runParkedWSGI() }
             worker.pointee.sweepTimeouts()
 
             if worker.pointee.draining && worker.pointee.quiescent {

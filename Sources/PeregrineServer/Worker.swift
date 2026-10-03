@@ -110,6 +110,9 @@ public struct Worker {
     /// to by finishing a response and dispatching the request pipelined
     /// behind it. The walk picks those up itself rather than starting another.
     var runningDeferredFlushes = false
+    /// Streams whose parked WSGI iterable can produce again, resumed after
+    /// the batch of events that drained them.
+    var parkedWSGIQueue: [UInt64] = []
 
     public var running = true
     /// Set on SIGTERM: stop accepting, finish what is in flight, then exit.
@@ -266,6 +269,7 @@ public struct Worker {
         // wait for the end of the loop iteration instead, which comes after the
         // application steps this batch has only just scheduled.
         if appProtocol == .wsgi && deferredFlushCount > 0 { runDeferredFlushes() }
+        if !parkedWSGIQueue.isEmpty { runParkedWSGI() }
     }
 
     mutating func handleConnectionEvent(_ slot: Int, _ mask: PollMask) {
@@ -1505,6 +1509,8 @@ public struct Worker {
         // A producer parked in `await send()` has to be released, or its task
         // never finishes and the interpreter never shuts down.
         releaseDrainWaiter(slot)
+        // An inline WSGI iterable parked on the stream is closed, not resumed.
+        releaseParkedWSGI(slot)
         // Likewise a consumer parked in `await receive()`. The disconnect is
         // usually delivered when the peer hangs up, but a connection can also
         // be dropped for reasons the application never sees -- a write that
@@ -1780,6 +1786,11 @@ public struct Worker {
     /// take another batch.
     mutating func resumeWriterIfDrained(_ slot: Int) {
         let c = table[slot]
+        if c.pointee.parkedWSGI != nil || (c.pointee.isStream && c.pointee.poolJob != nil) {
+            let behind = c.pointee.isH3Stream ? h3Outstanding(slot) : c.pointee.write.readableBytes
+            if behind <= config.writeLowWaterMark { queueParkedWSGI(slot) }
+            return
+        }
         guard let waiter = c.pointee.drainWaiter else { return }
         if c.pointee.wt != nil {
             if wtOutstanding(slot) > config.writeLowWaterMark { return }

@@ -158,9 +158,10 @@ extension Worker {
             // completing a response dispatches whatever was pipelined behind
             // it, from inside this frame. This is only the backstop for the
             // paths that return before reaching that point.
-            defer { WSGIStartResponse.clearSink(startResponse) }
-            // A compressor for a response that did not reach its end.
-            defer { boxPtr.pointee.encoder.destroy() }
+            defer { if !boxPtr.pointee.parked { WSGIStartResponse.clearSink(startResponse) } }
+            // A compressor for a response that did not reach its end. A parked
+            // response took its compressor with it.
+            defer { if !boxPtr.pointee.parked { boxPtr.pointee.encoder.destroy() } }
             runInline(slot, environ: environ, startResponse: startResponse,
                       box: boxPtr)
         }
@@ -198,7 +199,9 @@ extension Worker {
             return
         }
         defer {
-            closeIterable(result)
+            // A parked iterable is not finished: it resumes when the stream
+            // drains, and is closed then.
+            if !box.pointee.parked { closeIterable(result) }
             pg_decref(result)
         }
 
@@ -340,9 +343,22 @@ extension Worker {
                                        plan: WSGIHeadPlan,
                                        startResponse: PyObj,
                                        box: UnsafeMutablePointer<WSGIInlineWriteContext>) {
-        let c = table[slot]
         let produced = produceWSGIBody(slot, result: result, iterator: iterator,
                                        first: first, plan: plan, box: box)
+        if produced == .parked, let iterator {
+            parkWSGI(slot, result: result, iterator: iterator, plan: plan,
+                     startResponse: startResponse, box: box)
+            return
+        }
+        finishWSGIBody(slot, plan: plan, startResponse: startResponse,
+                       produced: produced == .done, box: box)
+    }
+
+    /// Ends a response whose body the application has finished producing.
+    private mutating func finishWSGIBody(_ slot: Int, plan: WSGIHeadPlan,
+                                         startResponse: PyObj, produced: Bool,
+                                         box: UnsafeMutablePointer<WSGIInlineWriteContext>) {
+        let c = table[slot]
 
         // The application has stopped producing, so no write() after this
         // point is its own request's. It has to be unhooked here rather than
@@ -417,8 +433,8 @@ extension Worker {
         iterator: PyObj?, first: PyObj?,
         plan: WSGIHeadPlan,
         box: UnsafeMutablePointer<WSGIInlineWriteContext>
-    ) -> Bool {
-        if plan.suppressBody { return true }
+    ) -> WSGIProduced {
+        if plan.suppressBody { return .done }
 
         guard let iterator else {
             let n = PySeq.count(result)
@@ -428,9 +444,9 @@ extension Worker {
                 k += 1
                 if !appendBodyPart(slot, part, chunked: plan.chunked,
                                    limit: &box.pointee.limit,
-                                   encoder: &box.pointee.encoder) { return false }
+                                   encoder: &box.pointee.encoder) { return .failed }
             }
-            return true
+            return .done
         }
 
         // Each block goes to the socket before the next one is asked for,
@@ -442,23 +458,122 @@ extension Worker {
         if let first {
             if !appendBodyPart(slot, first, chunked: plan.chunked,
                                limit: &box.pointee.limit,
-                               encoder: &box.pointee.encoder, flushNow: true) { return false }
+                               encoder: &box.pointee.encoder, flushNow: true) { return .failed }
+            if streamBackedUp(slot) { return .parked }
         }
+        return continueWSGIIterator(slot, iterator: iterator, plan: plan, box: box)
+    }
+
+    /// Pulls blocks from the iterator until it ends, or, on a stream, until
+    /// the peer's flow control has left too much unsent.
+    ///
+    /// A stream has no socket to block on, and blocking the loop would stop it
+    /// reading the WINDOW_UPDATE or the acknowledgement that would let the
+    /// bytes go. Producing on regardless buffers without bound for a client
+    /// that has stopped reading. So the iterator is parked instead, and taken
+    /// up again when the stream drains: the next block is asked for only when
+    /// there is somewhere for it to go.
+    private mutating func continueWSGIIterator(
+        _ slot: Int, iterator: PyObj, plan: WSGIHeadPlan,
+        box: UnsafeMutablePointer<WSGIInlineWriteContext>
+    ) -> WSGIProduced {
         while !box.pointee.limit.overflowed, let part = pg_iter_next(iterator) {
             let ok = appendBodyPart(slot, part, chunked: plan.chunked,
                                     limit: &box.pointee.limit,
                                     encoder: &box.pointee.encoder, flushNow: true)
             pg_decref(part)
-            if !ok { return false }
+            if !ok { return .failed }
+            if streamBackedUp(slot) { return .parked }
         }
         if pg_err_check() != 0 {
             PyError.logPending("application iterator raised")
             // Headers are already queued; the only honest signal left is to
             // drop the connection.
             closeConnection(slot)
-            return false
+            return .failed
         }
-        return true
+        return .done
+    }
+
+    private func streamBackedUp(_ slot: Int) -> Bool {
+        table[slot].pointee.isStream && writerShouldPause(slot)
+    }
+
+    // MARK: - A parked iterator
+
+    /// Moves a response that is waiting for its stream to drain off the frame
+    /// that called the application and onto the slot.
+    private mutating func parkWSGI(_ slot: Int, result: PyObj, iterator: PyObj,
+                                   plan: WSGIHeadPlan, startResponse: PyObj,
+                                   box: UnsafeMutablePointer<WSGIInlineWriteContext>) {
+        let heap = UnsafeMutablePointer<WSGIInlineWriteContext>.allocate(capacity: 1)
+        heap.initialize(to: box.pointee)
+        // The compressor now belongs to the heap copy.
+        box.pointee.encoder = ResponseEncoder()
+        box.pointee.parked = true
+        heap.pointee.plan = plan
+        pg_incref(result)
+        pg_incref(iterator)
+        pg_incref(startResponse)
+        // A write() from inside the generator, when it is resumed, reaches the
+        // copy rather than the frame that is about to return.
+        WSGIStartResponse.setSink(startResponse, wsgiInlineWriteSink,
+                                  context: UnsafeMutableRawPointer(heap))
+        table[slot].pointee.parkedWSGI = ParkedWSGI(result: result, iterator: iterator,
+                                                    startResponse: startResponse, box: heap)
+    }
+
+    /// Takes up a parked response once its stream has drained.
+    mutating func resumeParkedWSGI(_ slot: Int) {
+        guard let parked = table[slot].pointee.parkedWSGI else { return }
+        if streamBackedUp(slot) { return }
+        let box = parked.box
+        let plan = box.pointee.plan
+        let produced = continueWSGIIterator(slot, iterator: parked.iterator, plan: plan, box: box)
+        if produced == .parked { return }
+        // Finished or failed. A failure has already closed the connection,
+        // which released it.
+        guard let still = table[slot].pointee.parkedWSGI, still === parked else { return }
+        table[slot].pointee.parkedWSGI = nil
+        finishWSGIBody(slot, plan: plan, startResponse: parked.startResponse,
+                       produced: produced == .done, box: box)
+        parked.release()
+    }
+
+    /// Lets a parked response go without finishing it: the stream is gone.
+    mutating func releaseParkedWSGI(_ slot: Int) {
+        guard let parked = table[slot].pointee.parkedWSGI else { return }
+        table[slot].pointee.parkedWSGI = nil
+        parked.release()
+    }
+
+    /// Queues a stream whose WSGI producer -- a parked iterable, or a pool job
+    /// -- can go on now that it has drained. It runs after this batch of
+    /// events rather than from inside the flush that found the stream drained.
+    mutating func queueParkedWSGI(_ slot: Int) {
+        let c = table[slot]
+        guard !c.pointee.flags.contains(.drainQueued) else { return }
+        c.pointee.flags.insert(.drainQueued)
+        parkedWSGIQueue.append(PollToken.make(slot: slot, generation: c.pointee.generation))
+    }
+
+    mutating func runParkedWSGI() {
+        while !parkedWSGIQueue.isEmpty {
+            let tokens = parkedWSGIQueue
+            parkedWSGIQueue.removeAll(keepingCapacity: true)
+            for token in tokens {
+                let slot = PollToken.slot(token)
+                let c = table[slot]
+                guard c.pointee.state != .free,
+                      c.pointee.generation == PollToken.generation(token) else { continue }
+                c.pointee.flags.remove(.drainQueued)
+                if c.pointee.parkedWSGI != nil {
+                    resumeParkedWSGI(slot)
+                } else if c.pointee.poolJob != nil {
+                    pumpPoolJob(slot)
+                }
+            }
+        }
     }
 
     /// Records the framing decisions the builder made on the connection.
@@ -662,9 +777,13 @@ extension Worker {
         guard let wsgiPool, let job = c.pointee.poolJob else { return }
 
         // While the socket is behind, leave the bytes with the job: that is
-        // what makes the producing thread block instead of buffering.
-        if c.pointee.write.readableBytes > config.writeHighWaterMark {
-            setInterest(slot, [.write])
+        // what makes the producing thread block instead of buffering. A
+        // stream has no socket to watch; resumeWriterIfDrained queues it
+        // again when the peer's flow control lets it drain. Over HTTP/3 the
+        // slot's own buffer empties into QUIC at once, so what it is behind
+        // on is what QUIC holds unacknowledged.
+        if writerShouldPause(slot) {
+            if !c.pointee.isStream { setInterest(slot, [.write]) }
             return
         }
 
@@ -721,6 +840,51 @@ extension Worker {
 /// It lives on `callInline`'s frame, which encloses the whole response, and the
 /// sink is unhooked before that frame returns -- so a `write()` callable the
 /// application kept can no longer reach this box afterwards.
+enum WSGIProduced {
+    case done
+    case failed
+    /// Waiting for a stream to drain; see `continueWSGIIterator`.
+    case parked
+}
+
+/// A response whose iterable is waiting for its stream to drain. It holds a
+/// reference to each Python object it needs, and the write box, which lives on
+/// the heap from the moment it is parked. Only the slow-client case pays for
+/// the object.
+final class ParkedWSGI {
+    let result: PyObj
+    let iterator: PyObj
+    let startResponse: PyObj
+    let box: UnsafeMutablePointer<WSGIInlineWriteContext>
+
+    init(result: PyObj, iterator: PyObj, startResponse: PyObj,
+         box: UnsafeMutablePointer<WSGIInlineWriteContext>) {
+        self.result = result
+        self.iterator = iterator
+        self.startResponse = startResponse
+        self.box = box
+    }
+
+    /// Closes the iterable (PEP 3333), drops the references and frees the
+    /// box. Called once, on the loop thread, with the GIL held.
+    func release() {
+        WSGIStartResponse.clearSink(startResponse)
+        if pg_hasattr(result, "close") == 1 {
+            if let r = pg_call_method0(result, Interned[.nClose]) {
+                pg_decref(r)
+            } else {
+                PyError.logPending("iterable close()")
+            }
+        }
+        pg_decref(iterator)
+        pg_decref(result)
+        pg_decref(startResponse)
+        box.pointee.encoder.destroy()
+        box.deinitialize(count: 1)
+        box.deallocate()
+    }
+}
+
 struct WSGIInlineWriteContext {
     let slot: Int
     /// The framing the first write settled. The application's return value is
@@ -735,6 +899,10 @@ struct WSGIInlineWriteContext {
     /// The client went away during a write, so the connection is already
     /// closed and the slot must not be touched again.
     var dead = false
+    /// The iterable was parked on the slot (ParkedWSGI) to wait for the
+    /// stream to drain, so the frame that called the application must leave
+    /// it, its sink and its compressor alone.
+    var parked = false
 
     init(slot: Int) { self.slot = slot }
 }

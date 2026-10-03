@@ -114,6 +114,9 @@ public struct ConnFlags: OptionSet, Sendable {
     /// a high-water mark of body unread. Its next read takes up the rest.
     public static let h3BodyStalled    = ConnFlags(rawValue: 1 << 21)
 
+    /// A stream's WSGI producer is queued to go on (Worker.parkedWSGIQueue).
+    public static let drainQueued      = ConnFlags(rawValue: 1 << 22)
+
     /// Everything that describes one request rather than the connection.
     /// Cleared when a keep-alive connection starts its next request; missing
     /// one of these here would leak state across a pipelined request.
@@ -240,6 +243,8 @@ public struct Connection {
     /// one. This is the whole of ASGI write backpressure: without it a fast
     /// producer keeps appending to a buffer the socket is not draining.
     public var drainWaiter: PyObj? = nil
+    /// An inline WSGI iterable waiting for this stream to drain.
+    var parkedWSGI: ParkedWSGI? = nil
     /// Declared Content-Length of the response, or -1 for chunked.
     public var responseRemaining: Int = -1
 

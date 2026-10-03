@@ -66,6 +66,19 @@ version reached PyPI, in UTC.
   send its whole body (up to `--max-body`) into memory. Unread DATA now stays
   in the QUIC stream once the high-water mark is buffered, holding the window
   shut until the application reads, as on HTTP/1.1 and HTTP/2.
+- WSGI over HTTP/2 and HTTP/3: a response iterator was pulled to the end
+  however far the client had fallen behind, so a client that stopped
+  reading made the worker buffer the whole body (the full 16 MiB in a test
+  where the client granted no window). An inline iterator is now parked
+  while its stream is backed up past the write high-water mark (512 KiB)
+  and resumes when the stream drains; other requests on the worker are
+  served meanwhile. The legacy `write()` callable is not covered, since it
+  runs inside the application call.
+- WSGI over HTTP/2 with `--wsgi-threads`: a response that backed up past
+  the write high-water mark never resumed, because a stream has no socket
+  to wait on, so a slow reader stalled it for good. Over HTTP/3 the pool
+  checked a buffer that is always empty and never applied backpressure at
+  all. Both now pause and resume on the stream's real backlog.
 - `peregrine.webtransport`: a session kept every stream it had ever carried,
   so a long-lived session grew with its lifetime stream count. A stream is
   now forgotten once its end has been read and it is no longer writable.

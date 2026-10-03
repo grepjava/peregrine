@@ -254,6 +254,25 @@ class Client:
         self.sock.close()
 
 
+def worker_rss(server):
+    """Resident KiB of the server's workers (Linux only; 0 elsewhere)."""
+    try:
+        with open("/proc/%d/task/%d/children" % (server.proc.pid, server.proc.pid)) as f:
+            pids = f.read().split() or [str(server.proc.pid)]
+    except OSError:
+        return 0
+    total = 0
+    for pid in pids:
+        try:
+            with open("/proc/%s/status" % pid) as f:
+                for line in f:
+                    if line.startswith("VmRSS:"):
+                        total += int(line.split()[1])
+        except OSError:
+            pass
+    return total
+
+
 def test_basics():
     print("\nRequests and responses")
     with Server() as server:
@@ -852,6 +871,34 @@ def test_wsgi():
             check("and that stream ends cleanly, having kept its promise (%s)"
                   % label, s not in c.reset, "reset with %r" % c.reset.get(s))
             c.close()
+
+            # A client that grants no window. The iterator has to stop being
+            # asked for blocks, or the worker buffers all 16 MiB for a reader
+            # that is not reading -- and it must not stop the worker answering
+            # anyone else while it waits.
+            size = 16 * 1024 * 1024
+            before = worker_rss(server)
+            stalled = Client(server, window=0)
+            s = stalled.request(path="/firehose?%d" % size)
+            until = time.monotonic() + 1.5
+            while time.monotonic() < until:
+                stalled.step(timeout=0.1)
+            grown = worker_rss(server) - before
+            check("a stalled reader does not make the worker buffer the body (%s, %d KiB)"
+                  % (label, grown), grown < 8 * 1024, "%d KiB" % grown)
+            other = Client(server)
+            o = other.request(path="/")
+            status, _, body, _ = other.collect([o], deadline=5.0)
+            is_("another client is answered meanwhile (%s)" % label,
+                (status.get(o), body.get(o)), (200, b"hello from peregrine\n"))
+            other.close()
+            stalled.conn.update_settings({h2.settings.SettingCodes.INITIAL_WINDOW_SIZE: 65535})
+            stalled.conn.increment_flow_control_window(size)
+            stalled.flush()
+            _, _, body, _ = stalled.collect([s], deadline=60.0)
+            is_("and the stalled response arrives whole once it reads (%s)" % label,
+                len(body.get(s, b"")), size)
+            stalled.close()
 
 
 def test_informational():
