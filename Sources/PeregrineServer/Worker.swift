@@ -129,6 +129,8 @@ public struct Worker {
     /// --cache-size: where a cached response is copied out of the shared
     /// table to be sent, grown once to the largest entry the table holds.
     var cacheScratch = ByteBuffer()
+    /// --cache-size with --compress: what cached bodies compressed to.
+    var compressedMemo = CompressedMemo()
     /// Whether this worker arms the `SIGALRM` watchdog when it starts draining.
     ///
     /// A worker process is the last word on its own lifetime, so it does. A

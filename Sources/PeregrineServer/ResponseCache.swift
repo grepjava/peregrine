@@ -430,9 +430,14 @@ extension Worker {
     /// the client accepts a coding, in which case `scratch` holds the result.
     /// A 304 gets no body, and the coding the 200 would have had, which is
     /// what decides the ETag it repeats.
-    private func cachedPayload(_ slot: Int, _ entry: CachedEntry,
-                               eligibility: CompressionEligibility,
-                               into scratch: inout ByteBuffer) -> (ByteSpan, ContentCoding) {
+    ///
+    /// What a body compressed to is remembered (CompressedMemo), so a hot copy
+    /// is compressed once per worker and coding rather than once per hit. The
+    /// span returned from there is valid until the memo next changes, which is
+    /// after the caller has copied it into the response.
+    private mutating func cachedPayload(_ slot: Int, _ entry: CachedEntry,
+                                        eligibility: CompressionEligibility,
+                                        into scratch: inout ByteBuffer) -> (ByteSpan, ContentCoding) {
         let c = table[slot]
         let nothing = ByteSpan(entry.body.base, 0)
         guard config.compress else { return (entry.notModified ? nothing : entry.body, .identity) }
@@ -442,6 +447,11 @@ extension Worker {
                                         minimumLength: config.compressMinimumLength)
         if entry.notModified { return (nothing, coding) }
         guard coding != .identity else { return (entry.body, .identity) }
+        compressedMemo.configure(cacheMiB: config.cacheSizeMiB)
+        let key = ByteSpan(UnsafePointer(c.pointee.cacheKey.readPointer), c.pointee.cacheKey.readableBytes)
+        if let kept = compressedMemo.find(key: key, coding: coding, source: entry.body) {
+            return (kept, coding)
+        }
         var encoder = ResponseEncoder()
         defer { encoder.destroy() }
         guard encoder.start(coding),
@@ -451,7 +461,9 @@ extension Worker {
             scratch.clear()
             return (entry.body, .identity)
         }
-        return (ByteSpan(UnsafePointer(scratch.readPointer), scratch.readableBytes), coding)
+        let encoded = ByteSpan(UnsafePointer(scratch.readPointer), scratch.readableBytes)
+        compressedMemo.insert(key: key, coding: coding, source: entry.body, encoded: encoded)
+        return (encoded, coding)
     }
 
     /// `peregrine; hit; ttl=N`, the value of Cache-Status (RFC 9211).

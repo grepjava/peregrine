@@ -107,6 +107,20 @@ fetch /shared-copy --http2 -H "Accept-Encoding: gzip"
 is "and one that does gets it compressed" "$(header content-encoding)" "gzip"
 is "which decompresses to the same bytes" "$(gzip -dc < "$WORK/body")" "$plain"
 is "all from one call" "$(calls GET /shared-copy)" "1"
+# Each worker keeps what a copy compressed to, beside the body it came from.
+# A copy that has been replaced must never be served in its old encoding.
+for _ in $(seq 1 12); do
+    curl -sk -o /dev/null -H "Accept-Encoding: gzip" "$S/item?memo"
+done
+fetch "/item?memo" --http1.1 -H "Accept-Encoding: gzip"
+before=$(gzip -dc < "$WORK/body" | head -1)
+curl -sk -o /dev/null -X POST "$S/item?memo"
+stale=0
+for _ in $(seq 1 12); do
+    fetch "/item?memo" --http1.1 -H "Accept-Encoding: gzip"
+    [ "$(gzip -dc < "$WORK/body" | head -1)" = "$before" ] && stale=$((stale+1))
+done
+is "a replaced copy is never sent in its old compressed form" "$stale:$(calls GET /item?memo)" "0:2"
 
 echo "a response that says Vary: Accept-Encoding"
 fetch /vary-ae --http1.1 -H "Accept-Encoding: gzip, br"
