@@ -816,6 +816,20 @@ def test_wsgi():
             is_("a body past the whole stream window round trips (%s)" % label,
                 (status.get(s), body.get(s) == huge), (200, True))
 
+            # Many small ones on one connection. WSGI never consumed through
+            # the receive path, so the connection window was never given back
+            # either: the 65th 4 KiB upload on a connection stalled for good.
+            small = b"y" * 4096
+            completed = 0
+            for _ in range(100):
+                s = c.request(method="POST", path="/echo", body=small)
+                status, _, body, _ = c.collect([s], deadline=10.0)
+                if (status.get(s), body.get(s)) != (200, small):
+                    break
+                completed += 1
+            is_("a hundred 4 KiB uploads on one connection all complete (%s)" % label,
+                completed, 100)
+
             # Two at once, interleaved frame by frame.
             a = c.request(method="POST", path="/echo",
                           extra=[("content-length", str(len(huge)))], end=False)

@@ -53,11 +53,15 @@ version reached PyPI, in UTC.
 - With `--max-header-size` above 64 KiB, an escaped request path longer than
   64 KiB reached the application undecoded in `scope["path"]` and
   `PATH_INFO`. The decode buffer now grows with the head limit.
-- HTTP/2: a WSGI upload larger than the stream window (256 KiB)
-  stopped at the window and was never answered, inline
-  and pooled alike. WSGI reads nothing until the body is whole, so the
-  window is now refreshed as the bytes arrive, still bounded by
-  `--max-body`.
+- HTTP/2: WSGI request bodies never gave back flow-control window, inline or
+  pooled. An upload larger than the stream window (256 KiB) stopped at the
+  window and was never answered, and once a connection had carried 256 KiB
+  of WSGI request bodies in total, every later upload on it stalled: the
+  65th 4 KiB POST on one connection never completed. WSGI reads nothing
+  until the body is whole, so the window is now refreshed as the bytes
+  arrive, still bounded by `--max-body`. On the benchmark machine, 4 KiB
+  WSGI POSTs over HTTP/2 went from about 12,000 client errors per 10 s
+  round to none, and throughput rose 8%.
 - HTTP/2: padded DATA frames used up stream window that was never given back.
   A client could stall a stream with padding alone. The padding is now
   credited back at once.
