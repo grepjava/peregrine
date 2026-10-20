@@ -199,6 +199,16 @@ class Client(QuicConnectionProtocol):
         self.transmit()
         return stream_id
 
+    def cancel(self, stream_id, code=0x010c):     # H3_REQUEST_CANCELLED
+        """Cancels a request the way RFC 9114 4.1.1 says a client does: reset
+        the sending side and abort the receiving side. A GET already sent its
+        FIN, and once that is acknowledged RESET_STREAM is not allowed (aioquic
+        1.4 and later send nothing), so STOP_SENDING is all that tells the
+        server the response is no longer wanted."""
+        self._quic.reset_stream(stream_id, code)
+        self._quic.stop_stream(stream_id, code)
+        self.transmit()
+
     def send_body(self, stream_id, data, end_stream=False):
         self._http.send_data(stream_id=stream_id, data=data, end_stream=end_stream)
         self.transmit()
@@ -544,8 +554,7 @@ async def cancellation():
                            create_protocol=Client) as client:
             stream_id = client.start("GET", "/slow?5")
             await asyncio.sleep(0.05)
-            client._quic.reset_stream(stream_id, 0x010c)     # H3_REQUEST_CANCELLED
-            client.transmit()
+            client.cancel(stream_id)
             await asyncio.sleep(0.4)
 
             status, _, body = await client.request("GET", "/")
@@ -560,8 +569,7 @@ async def cancellation():
             # resets would be paying for application work rather than nothing.
             abandoned = client.start("GET", "/abandonable")
             await asyncio.sleep(0.3)
-            client._quic.reset_stream(abandoned, 0x010c)
-            client.transmit()
+            client.cancel(abandoned)
             await asyncio.sleep(0.5)
             status, _, body = await client.request("GET", "/cancelled")
             is_("a reset stream cancels the task nobody is left to talk to",
