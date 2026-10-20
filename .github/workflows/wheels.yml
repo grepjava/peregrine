@@ -7,7 +7,7 @@
 # platform is this image's glibc -- PyPI rejects linux_*. Python itself is the
 # installing interpreter; nothing of it is vendored.
 #
-# Started by hand, like CI. Building ten release modules is a bill, and
+# Started by hand, like CI. Building fourteen release modules is a bill, and
 # publishing is a separate input so a dry run cannot reach PyPI.
 
 name: Wheels
@@ -39,7 +39,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python: ["3.11", "3.12", "3.13", "3.14", "3.14t"]
+        python: ["3.11", "3.12", "3.13", "3.14", "3.14t", "3.15", "3.15t"]
         arch: [x86_64, aarch64]
         include:
           - arch: x86_64
@@ -132,7 +132,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python: ["3.11", "3.12", "3.13", "3.14"]
+        python: ["3.11", "3.12", "3.13", "3.14", "3.15"]
         arch: [x86_64, aarch64]
     steps:
       - uses: actions/download-artifact@v4

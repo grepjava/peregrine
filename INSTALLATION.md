@@ -97,7 +97,7 @@ a machine that could build 1.1.6 can build this. Fewer cores scale the time
 roughly as you would expect, which is why the wheel is the one to prefer on a
 small VPS.
 
-The wheels cover CPython 3.11, 3.12, 3.13, 3.14 and free-threaded 3.14t, on
+The wheels cover CPython 3.11 to 3.15 and free-threaded 3.14t and 3.15t, on
 Linux x86_64 and aarch64 with glibc 2.35 or newer (`manylinux_2_35`): Debian 12,
 Ubuntu 22.04, what came after them, Fedora, and the official `python:*-slim`
 images. Older glibc, Alpine's musl and macOS compile from the sdist. When it

@@ -41,7 +41,7 @@ peregrine --host 0.0.0.0 --workers 0 main:app    # where you ran: uvicorn main:a
 - **Free-threaded Python.** On CPython 3.14t, `--free-threaded` runs the
   workers as threads of one process: the throughput of processes at a third
   of the memory.
-- **Wheels for Linux x86_64 and aarch64**, CPython 3.11 to 3.14 and 3.14t,
+- **Wheels for Linux x86_64 and aarch64**, CPython 3.11 to 3.15, 3.14t and 3.15t,
   including the official `python:*-slim` images. No Swift toolchain needed.
 
 ---
@@ -293,7 +293,7 @@ it. [Details.](https://github.com/grepjava/peregrine/blob/main/CONFIG.md#free-th
 ## Installing
 
 A wheel is tagged for one CPython and one platform. PyPI has them for CPython
-3.11 to 3.14 and free-threaded 3.14t, on Linux x86_64 and aarch64 with glibc
+3.11 to 3.15 and free-threaded 3.14t and 3.15t, on Linux x86_64 and aarch64 with glibc
 2.35 or newer: Debian 12, Ubuntu 22.04, what came after them, and the official
 `python:*-slim` images. When one matches, `pip` installs it and Swift is not
 required. When none does, as on macOS, Alpine or an older distribution, `pip`
@@ -574,7 +574,7 @@ swift run -c release pgfuzz                     # mutation fuzzing of every
 ```
 
 [CI](https://github.com/grepjava/peregrine/blob/main/.github/workflows/ci.yml) runs all of it on every push, against CPython
-3.11 through 3.14 and a free-threaded 3.14, on Linux and macOS, plus the
+3.11 through 3.15 and free-threaded 3.14 and 3.15, on Linux and macOS, plus the
 fuzzer under AddressSanitizer. The suites are the ones above — there is no
 CI-only test path, so a green run there means what a green run here means.
 [More on the fuzzing.](https://github.com/grepjava/peregrine/blob/main/fuzz/README.md)

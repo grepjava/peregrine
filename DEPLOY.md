@@ -87,10 +87,10 @@ gh workflow run CI --ref main
 gh run watch
 ```
 
-Wheels is ten build jobs: 3.11, 3.12, 3.13, 3.14 and 3.14t on Ubuntu 22.04,
-for x86_64 and for aarch64. Each artifact is one wheel. Eight `slim` jobs then
+Wheels is fourteen build jobs: 3.11, 3.12, 3.13, 3.14, 3.14t, 3.15 and 3.15t on Ubuntu 22.04,
+for x86_64 and for aarch64. Each artifact is one wheel. Ten `slim` jobs then
 install each GIL wheel into `python:X.Y-slim-bookworm` with nothing but pip and
-serve a request from it. A release is ten wheels and the sdist, eleven files.
+serve a request from it. A release is fourteen wheels and the sdist, fifteen files.
 Leave `publish` off — that input skips the sdist.
 
 The wheels come before the tag. A build that fails then needs another commit,

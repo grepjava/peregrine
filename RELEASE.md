@@ -39,6 +39,9 @@ version reached PyPI, in UTC.
   client that lost it, and an `on_create` hook for whose upload it is are
   covered; `scripts/upload-test.py` checks it end to end, 68 checks with two
   workers.
+- Wheels for CPython 3.15 and free-threaded 3.15t, on Linux x86_64 and
+  aarch64, so `pip install peregrine-server` on 3.15 no longer needs a Swift
+  toolchain. CI runs the suites on both.
 
 ### Fixed
 
