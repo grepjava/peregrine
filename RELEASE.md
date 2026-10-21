@@ -20,6 +20,10 @@ version reached PyPI, in UTC.
 
 ## Unreleased
 
+---
+
+## 1.1.8 — 2026-10-21
+
 ### Added
 
 - ASGI applications can send interim (1xx) responses before

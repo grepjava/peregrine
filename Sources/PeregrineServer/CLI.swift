@@ -220,7 +220,7 @@ public enum PeregrineCLI {
             _ = av_write(1, usage.utf8Start, usage.utf8CodeUnitCount)
         }
 
-        let version: StaticString = "peregrine 1.1.7"
+        let version: StaticString = "peregrine 1.1.8"
 
         /// Reports the build version and the CPython actually linked.
         ///
