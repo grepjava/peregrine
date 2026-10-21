@@ -348,6 +348,8 @@ final class ThreadSupervisor {
     var loop: PyObj? = nil
     var lifespan: PyObj? = nil
     var timerCallback: PyObj? = nil
+    /// Windows: the thread watching `signalFD` for the loop; see pg_bridge_start.
+    var bridge: OpaquePointer? = nil
 
     var shuttingDown = false
     /// When a drain that is taking too long stops being a drain.
@@ -420,7 +422,11 @@ final class ThreadSupervisor {
 
 private func supervisorSignalCallback(_ context: UInt64, _ tag: UInt64, _ args: PyObj?) -> PyObj? {
     guard let p = UnsafeRawPointer(bitPattern: UInt(context)) else { return nil }
-    Unmanaged<ThreadSupervisor>.fromOpaque(p).takeUnretainedValue().readSignals()
+    let sup = Unmanaged<ThreadSupervisor>.fromOpaque(p).takeUnretainedValue()
+    sup.readSignals()
+    // Windows: the bridge waits for this before watching again.
+    _ = pg_bridge_take(sup.bridge)
+    pg_bridge_done(sup.bridge)
     return nil
 }
 
@@ -644,7 +650,23 @@ extension Peregrine {
             pg_err_clear()
         }
 
+        #if os(Windows)
+        // The loop cannot watch a socket here (see pg_bridge_start), so a poller
+        // holding only the signal socket is watched for it.
+        guard let poller = Poller(maxEvents: 4) else { return }
+        defer { poller.destroy() }
+        guard poller.add(supervisor.signalFD, .read, token: 0),
+              let bridge = pg_bridge_start(loop, onSignal, poller.fd, poller.eventBuffer,
+                                           poller.eventCapacity) else {
+            PyError.logPending("watching the signal socket")
+            return
+        }
+        supervisor.bridge = bridge
+        guard let fdObj = Interned.none else { return }
+        pg_incref(fdObj)
+        #else
         guard let fdObj = pg_int(Int(supervisor.signalFD)) else { return }
+        #endif
         defer { pg_decref(fdObj) }
         if let r = pg_call3(ASGIRuntime.fnRunLoop, loop, fdObj, onSignal) {
             pg_decref(r)
@@ -652,6 +674,8 @@ extension Peregrine {
             PyError.logPending("running the supervising event loop")
         }
         supervisor.timerCallback = nil
+        pg_bridge_stop(supervisor.bridge)
+        supervisor.bridge = nil
     }
 
     /// WSGI: no asyncio anywhere, so the main thread simply waits on the signal

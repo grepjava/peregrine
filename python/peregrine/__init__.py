@@ -105,6 +105,50 @@ def _keep_windows_venv():
         os.environ["__PYVENV_LAUNCHER__"] = sys.executable
 
 
+def _follow_windows_launcher():
+    """On Windows, ends this process when the launcher that started it dies.
+
+    `peregrine.exe` and a venv's `python.exe` are launchers: small programs
+    that start the real interpreter and wait for it. Ending one -- Task
+    Manager, or a supervisor calling TerminateProcess -- does not end what it
+    started, so the server would go on holding its port with nothing left to
+    stop it. A launcher that is merely waiting never exits first, so its exit
+    means it was killed, and the server goes with it; its workers end with it
+    in turn. Only a parent that is such a launcher is followed.
+    """
+    if sys.platform != "win32":
+        return
+    import ctypes
+    import threading
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.QueryFullProcessImageNameW.argtypes = [
+        wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD)]
+    kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    synchronize, query_limited = 0x00100000, 0x1000
+    parent = kernel32.OpenProcess(synchronize | query_limited, False, os.getppid())
+    if not parent:
+        return
+    size = wintypes.DWORD(32768)
+    image = ctypes.create_unicode_buffer(size.value)
+    if not kernel32.QueryFullProcessImageNameW(parent, 0, image, ctypes.byref(size)):
+        return
+    path = os.path.normcase(image.value)
+    launchers = {os.path.normcase(os.path.abspath(sys.executable)),
+                 os.path.normcase(os.path.abspath(sys.argv[0]))}
+    if path not in launchers and os.path.basename(path) != "peregrine.exe":
+        return
+
+    def follow():
+        kernel32.WaitForSingleObject(parent, 0xFFFFFFFF)
+        os._exit(1)
+
+    threading.Thread(target=follow, name="peregrine-launcher", daemon=True).start()
+
+
 def _windows_dll_directory():
     """On Windows, lets the extension find the Swift runtime and OpenSSL DLLs
     vendored beside it. Windows looks for a DLL's dependencies in its own
@@ -127,6 +171,7 @@ def run(argv=None):
     native = _native_module()
     if native is not None:
         _keep_windows_venv()
+        _follow_windows_launcher()
         raise SystemExit(native.serve(["peregrine"] + _default_arguments(argv) + argv))
 
     binary = binary_path()

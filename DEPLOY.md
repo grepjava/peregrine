@@ -30,7 +30,9 @@ A wheel carries `peregrine._native`, the server as an extension module, with
 the Swift runtime vendored beside it; Python is the user's interpreter. The platform tag is `manylinux_2_N` for the builder's glibc.
 The wheels are built on Ubuntu 22.04, which is `2_35`: that covers Debian 12
 and the `python:*-slim` images, which a 24.04 build (`2_39`) did not. PyPI
-rejects `linux_*`; it will not take a wheel that still has that tag. Older
+rejects `linux_*`; it will not take a wheel that still has that tag. On Windows the
+tag is `win_amd64`, and the wheel carries the Swift runtime's and OpenSSL's DLLs
+beside the module. Older
 glibc, musl and macOS compile from the sdist. macOS wheels would have to
 vendor OpenSSL, which makes every OpenSSL fix a Peregrine release, so they are
 not built.
@@ -90,8 +92,20 @@ gh run watch
 Wheels is fourteen build jobs: 3.11, 3.12, 3.13, 3.14, 3.14t, 3.15 and 3.15t on Ubuntu 22.04,
 for x86_64 and for aarch64. Each artifact is one wheel. Ten `slim` jobs then
 install each GIL wheel into `python:X.Y-slim-bookworm` with nothing but pip and
-serve a request from it. A release is fourteen wheels and the sdist, fifteen files.
+serve a request from it. The Linux wheels are fourteen of the release's files.
 Leave `publish` off — that input skips the sdist.
+
+The Windows wheels are built on a Windows machine, not in Actions: seven
+`win_amd64` wheels, one per interpreter, each smoke-tested from a fresh venv
+with no Swift or OpenSSL on `PATH`:
+
+```powershell
+pwsh -NoProfile -File scriptsuild-wheels-windows.ps1 -Out dist
+```
+
+It needs Swift, the Visual Studio C++ build tools, OpenSSL for Windows and uv
+([INSTALLATION.md](INSTALLATION.md#windows)). With them a release is
+twenty-one wheels and the sdist, twenty-two files.
 
 The wheels come before the tag. A build that fails then needs another commit,
 not a tag moved after GitHub has already announced it.
