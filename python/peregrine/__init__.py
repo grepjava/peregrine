@@ -91,6 +91,31 @@ def _native_module():
     return importlib.import_module(name)
 
 
+def _keep_windows_venv():
+    """On Windows, makes the worker processes start in this virtualenv.
+
+    A Windows venv's python.exe is a launcher: it starts the base interpreter
+    and tells it which venv it is in through __PYVENV_LAUNCHER__, which the
+    interpreter removes from its environment once read. Workers are this
+    process started again, from the base interpreter's executable, so without
+    the variable put back they would start outside the venv and fail to
+    import peregrine, let alone the application.
+    """
+    if sys.platform == "win32" and sys.prefix != sys.base_prefix:
+        os.environ["__PYVENV_LAUNCHER__"] = sys.executable
+
+
+def _windows_dll_directory():
+    """On Windows, lets the extension find the Swift runtime and OpenSSL DLLs
+    vendored beside it. Windows looks for a DLL's dependencies in its own
+    directory and on PATH, not in a subdirectory the way an rpath points."""
+    if sys.platform != "win32":
+        return
+    vendored = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_swift")
+    if os.path.isdir(vendored):
+        os.add_dll_directory(vendored)
+
+
 def run(argv=None):
     """Runs the server. Does not return on success.
 
@@ -101,6 +126,7 @@ def run(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     native = _native_module()
     if native is not None:
+        _keep_windows_venv()
         raise SystemExit(native.serve(["peregrine"] + _default_arguments(argv) + argv))
 
     binary = binary_path()
@@ -152,3 +178,7 @@ def _prepend_loader_path(dirs):
 
 def main():
     run()
+
+
+# Before anything imports peregrine._native, which needs them on Windows.
+_windows_dll_directory()

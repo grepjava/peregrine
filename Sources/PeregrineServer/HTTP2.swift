@@ -900,7 +900,7 @@ extension Worker {
         if slot < 0 { return -1 }
         let p = table[parent]
         let s = table[slot]
-        s.pointee.fd = -1
+        s.pointee.fd = noSocket
         s.pointee.parentSlot = Int32(parent)
         s.pointee.streamID = streamID
         s.pointee.state = .readingBody

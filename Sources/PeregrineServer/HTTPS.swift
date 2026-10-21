@@ -22,7 +22,7 @@ import AvianHTTP
 extension Worker {
 
     public mutating func registerRedirectListener() -> Bool {
-        guard redirectFD >= 0 else { return true }
+        guard isSocket(redirectFD) else { return true }
         guard poller.add(redirectFD, .read, token: PollToken.redirect) else {
             Log.error("failed to register the --redirect-http listener")
             return false
@@ -42,22 +42,23 @@ extension Worker {
             let fd = peer.withUnsafeMutableBufferPointer { raw in
                 av_accept(redirectFD, raw.baseAddress!, 48, &port)
             }
-            if fd < 0 { return }
+            if !isSocket(fd) { return }
             beginOneShot(fd, redirect: true)
         }
     }
 
     /// Stops taking redirects, for a worker that has started draining.
     mutating func closeRedirectListener() {
-        guard redirectFD >= 0 else { return }
+        guard isSocket(redirectFD) else { return }
         _ = poller.remove(redirectFD)
-        _ = av_close(redirectFD)
-        redirectFD = -1
+        // A listener shared with other workers stays open for them.
+        if ownsRedirectListener { _ = av_close(redirectFD) }
+        redirectFD = noSocket
     }
 
     /// Answers one plain request with the https URL it should have used, or
     /// with 400 when it gives no usable host, and closes the connection.
-    mutating func serveRedirect(_ fd: Int32, _ request: ByteBuffer) {
+    mutating func serveRedirect(_ fd: AvianSocket, _ request: ByteBuffer) {
         defer { _ = av_close(fd) }
         var status = 400
         var location = ByteBuffer()

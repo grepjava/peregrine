@@ -219,7 +219,7 @@ extension Worker {
         let c = table[slot]
         guard let session = c.pointee.tls else { return }
         c.pointee.tls = nil
-        if c.pointee.fd >= 0 { av_tls_shutdown(session) }
+        if isSocket(c.pointee.fd) { av_tls_shutdown(session) }
         av_tls_free(session)
     }
 }

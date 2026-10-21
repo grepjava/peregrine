@@ -27,6 +27,8 @@
 import Glibc
 #elseif canImport(Darwin)
 import Darwin
+#elseif canImport(ucrt)
+import ucrt
 #endif
 
 import CAvian
@@ -40,7 +42,7 @@ final class ReloadWatcher {
 
     /// The kernel's change notification, readable when something changed, or
     /// -1 where there is none.
-    let notifyFD: Int32
+    let notifyFD: AvianSocket
     /// Directories added to `notifyFD`.
     private var watched = Set<String>()
     /// When the last notification not yet scanned for arrived, or 0.
@@ -74,7 +76,7 @@ final class ReloadWatcher {
     }
 
     deinit {
-        if notifyFD >= 0 { av_watch_close(notifyFD) }
+        if isSocket(notifyFD) { av_watch_close(notifyFD) }
     }
 
     /// Whether a notification is waiting out `settleMs`, so the supervisor
@@ -85,7 +87,7 @@ final class ReloadWatcher {
     /// due, so the supervisor calls it on every loop turn.
     func changed() -> Bool {
         let now = av_monotonic_ms()
-        if notifyFD >= 0 && av_watch_drain(notifyFD) > 0 {
+        if isSocket(notifyFD) && av_watch_drain(notifyFD) > 0 {
             // Every event restarts the wait: a save still in progress is not
             // yet the change to reload for. A tree that never stops changing
             // is still scanned, on the interval below.
@@ -112,7 +114,7 @@ final class ReloadWatcher {
         }
         // A directory that is gone lost its watch with it. Forgetting it here
         // means one recreated under the same name is watched again.
-        if notifyFD >= 0 { watched.formIntersection(visited) }
+        if isSocket(notifyFD) { watched.formIntersection(visited) }
         return digest
     }
 
@@ -121,21 +123,18 @@ final class ReloadWatcher {
         // A deep tree is almost always a dependency directory that slipped past
         // the skip list; stop rather than crawl it.
         if depth > 12 { return }
-        guard let dir = opendir(path) else { return }
-        defer { closedir(dir) }
+        guard let dir = av_dir_open(path) else { return }
+        defer { av_dir_close(dir) }
 
-        if notifyFD >= 0 {
+        if isSocket(notifyFD) {
             visited.insert(path)
             if !watched.contains(path) && av_watch_add(notifyFD, path) == 0 {
                 watched.insert(path)
             }
         }
 
-        while let entry = readdir(dir) {
-            var e = entry.pointee
-            let name = withUnsafeBytes(of: &e.d_name) { raw -> String in
-                String(cString: raw.baseAddress!.assumingMemoryBound(to: CChar.self))
-            }
+        while let entry = av_dir_next(dir) {
+            let name = String(cString: entry)
             if name.isEmpty || name == "." || name == ".." { continue }
             if name.hasPrefix(".") && name != ".env" { continue }
             if ReloadWatcher.skipped.contains(name) { continue }

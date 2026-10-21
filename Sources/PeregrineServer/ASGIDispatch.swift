@@ -230,7 +230,21 @@ public enum ASGIRuntime {
         // Prime the periodic sweep (idle timeouts, drain completion).
         if let r = pg_call2(fnArmTimer, l, timer) { pg_decref(r) } else { pg_err_clear() }
 
+        #if os(Windows)
+        // No add_reader here: a thread of ours watches the poller and hands the
+        // loop each batch (pg_bridge_start), so the loop is given None.
+        let poller = worker.pointee.poller
+        guard let bridge = pg_bridge_start(l, drain, poller.fd, poller.eventBuffer,
+                                           poller.eventCapacity) else {
+            PyError.logPending("starting the poller thread")
+            return
+        }
+        worker.pointee.asgiBridge = bridge
+        guard let pollFD = Interned.none else { return }
+        pg_incref(pollFD)
+        #else
         guard let pollFD = pg_int(Int(worker.pointee.poller.fd)) else { return }
+        #endif
         defer { pg_decref(pollFD) }
 
         if let r = pg_call3(fnRunLoop, l, pollFD, drain) {
@@ -240,6 +254,10 @@ public enum ASGIRuntime {
         }
 
         shutdown(worker)
+        // After the shutdown, which runs the loop again to let requests finish
+        // and still needs the poller watched while it does.
+        pg_bridge_stop(worker.pointee.asgiBridge)
+        worker.pointee.asgiBridge = nil
     }
 
     /// Shuts the loop down in the order an application expects.
@@ -301,9 +319,17 @@ public enum ASGIRuntime {
 /// asyncio calls this whenever the poller descriptor becomes readable.
 private func asgiDrain(_ context: UInt64, _ tag: UInt64, _ args: PyObj?) -> PyObj? {
     guard let worker = currentWorker else { return nil }
+    #if os(Windows)
+    // The bridge thread already collected the batch; see pg_bridge_start.
+    let n = Int(pg_bridge_take(worker.pointee.asgiBridge))
+    if n > 0 { worker.pointee.processEvents(n) }
+    worker.pointee.quicTick()
+    pg_bridge_done(worker.pointee.asgiBridge)
+    #else
     // Timeout 0: asyncio already told us there is something to collect.
     worker.pointee.drain(timeoutMillis: 0)
     worker.pointee.quicTick()
+    #endif
     return nil
 }
 

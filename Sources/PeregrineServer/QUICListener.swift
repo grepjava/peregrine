@@ -27,7 +27,7 @@ public final class QUICListener {
     /// packet the path could not have carried intact.
     static let datagramSize = 1500
 
-    public let fd: Int32
+    public let fd: AvianSocket
     var config: QUICServerConfig
 
     /// Connections indexed by every connection ID that reaches them: the one
@@ -70,7 +70,7 @@ public final class QUICListener {
 
     public var maxConnections = 4096
 
-    public init(fd: Int32, config: QUICServerConfig) {
+    public init(fd: AvianSocket, config: QUICServerConfig) {
         self.fd = fd
         self.config = config
         let stride = QUICListener.datagramSize

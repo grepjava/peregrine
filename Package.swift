@@ -40,6 +40,35 @@ let hosted = (Context.environment["PEREGRINE_EXTENSION"] ?? "0") != "0"
 let pythonPackage = Context.environment["PEREGRINE_PYTHON_PC"]
     ?? (hosted ? "python3" : "python3-embed")
 
+// Windows has no pkg-config. PEREGRINE_PYTHON_HOME names the installation
+// (the directory holding include\ and libs\), and pyconfig.h links the import
+// library itself through #pragma comment(lib). A free-threaded installation
+// does not say so in its pyconfig.h: PEREGRINE_PYTHON_FT=1 defines
+// Py_GIL_DISABLED, as every Windows build against 3.13t and later has to.
+#if os(Windows)
+let pythonHome = Context.environment["PEREGRINE_PYTHON_HOME"] ?? ""
+let pythonFreeThreaded = (Context.environment["PEREGRINE_PYTHON_FT"] ?? "0") != "0"
+let pythonDefines = pythonFreeThreaded ? ["-DPy_GIL_DISABLED=1"] : []
+let pythonCFlags: [CSetting] = [.unsafeFlags(["-I\(pythonHome)\\include"] + pythonDefines)]
+let pythonSwiftFlags: [SwiftSetting] = [
+    .unsafeFlags(["-Xcc", "-I\(pythonHome)\\include"] + pythonDefines.flatMap { ["-Xcc", $0] }),
+]
+let pythonLinkFlags: [LinkerSetting] = [.unsafeFlags(["-L\(pythonHome)\\libs"])]
+#else
+let pythonCFlags: [CSetting] = []
+let pythonSwiftFlags: [SwiftSetting] = []
+let pythonLinkFlags: [LinkerSetting] = []
+#endif
+
+// PEREGRINE_AVIANCORE_PATH builds against a local aviancore checkout instead
+// of the released one, for changes that span both.
+let aviancore: Package.Dependency = Context.environment["PEREGRINE_AVIANCORE_PATH"]
+    .map { .package(path: $0) }
+    ?? .package(url: "https://github.com/grepjava/aviancore", .upToNextMinor(from: "0.7.1"))
+
+/// Settings for every target that sees Python.h.
+let pythonSwiftSettings = sharedSwiftSettings + pythonSwiftFlags
+
 /// A module of aviancore, the protocol and systems layers Peregrine is built on.
 func avian(_ name: String) -> Target.Dependency {
     .product(name: name, package: "aviancore")
@@ -55,7 +84,7 @@ let package = Package(
     dependencies: [
         // The protocol and systems layers: syscalls, TLS, buffers, the poller,
         // HTTP/1.1, HTTP/2, HTTP/3 and QUIC.
-        .package(url: "https://github.com/grepjava/aviancore", .upToNextMinor(from: "0.7.1")),
+        aviancore,
     ],
     targets: [
         // libpython, located through `python3-embed.pc` -- or, for the
@@ -74,34 +103,35 @@ let package = Package(
         // Every CPython construct that is a macro, a union, or variadic.
         .target(
             name: "CPeregrine",
-            dependencies: ["CPython"],
+            dependencies: ["CPython", avian("CAvian")],
             path: "Sources/CPeregrine",
             cSettings: [
                 .headerSearchPath("include"),
-            ]
+            ] + pythonCFlags
         ),
 
         .target(name: "PeregrinePython",
                 dependencies: ["CPython", "CPeregrine", avian("CAvian"), avian("AvianCore")],
-                swiftSettings: sharedSwiftSettings),
+                swiftSettings: pythonSwiftSettings),
 
         .target(name: "PeregrineWSGI",
                 dependencies: ["CPeregrine", avian("CAvian"), avian("AvianCore"), avian("AvianHTTP"),
                                "PeregrinePython"],
-                swiftSettings: sharedSwiftSettings),
+                swiftSettings: pythonSwiftSettings),
 
         .target(name: "PeregrineASGI",
                 dependencies: ["CPeregrine", avian("CAvian"), avian("AvianCore"), avian("AvianHTTP"),
                                "PeregrinePython"],
-                swiftSettings: sharedSwiftSettings),
+                swiftSettings: pythonSwiftSettings),
 
         .target(name: "PeregrineServer",
                 dependencies: ["CPeregrine", avian("CAvian"), avian("AvianCore"), avian("AvianHTTP"),
                                avian("AvianQUIC"), "PeregrinePython", "PeregrineWSGI", "PeregrineASGI"],
-                swiftSettings: sharedSwiftSettings),
+                swiftSettings: pythonSwiftSettings),
 
         .executableTarget(name: "peregrine", dependencies: ["PeregrineServer"],
-                          swiftSettings: sharedSwiftSettings),
+                          swiftSettings: pythonSwiftSettings,
+                          linkerSettings: pythonLinkFlags),
 
         // The parsers that read bytes chosen by the peer, with the invariants
         // that have to survive them. A library rather than part of `pgfuzz`
@@ -135,7 +165,7 @@ if hosted {
     package.targets.append(
         .target(name: "PeregrineExtension",
                 dependencies: ["CPeregrine", avian("CAvian"), "PeregrineServer"],
-                swiftSettings: sharedSwiftSettings,
+                swiftSettings: pythonSwiftSettings,
                 // Calls from the server into its own functions bind at link
                 // time, as they do in the executable, instead of going through
                 // the PLT so that another library could interpose them.
@@ -145,5 +175,5 @@ if hosted {
                     // told that whoever loads it will supply them.
                     .unsafeFlags(["-Xlinker", "-undefined", "-Xlinker", "dynamic_lookup"],
                                  .when(platforms: [.macOS])),
-                ]))
+                ] + pythonLinkFlags))
 }

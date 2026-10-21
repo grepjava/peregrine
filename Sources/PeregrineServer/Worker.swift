@@ -45,18 +45,21 @@ public struct Worker {
     public var pool: BufferPool
     public var dates: DateCache
 
-    public var listenFD: Int32
+    public var listenFD: AvianSocket
     /// The metrics scrape listener, or -1. Separate from `listenFD` in every
     /// sense: a different port, a different handler, no connection slot.
-    public var metricsFD: Int32 = -1
+    public var metricsFD: AvianSocket = noSocket
     /// Scrapes whose request has not finished arriving. Fixed in number, so
     /// waiting for one can never become a way to use up this worker.
     public var scrapes = [PendingScrape](repeating: PendingScrape(),
                                          count: PollToken.metricsPendingCount)
     /// The --redirect-http listener, or -1. Like `metricsFD`: its own port,
     /// its own handler, no connection slot.
-    public var redirectFD: Int32 = -1
-    public var signalFD: Int32 = -1
+    public var redirectFD: AvianSocket = noSocket
+    /// Whether `redirectFD` is this worker's alone to close. Not on Windows,
+    /// where every worker shares the one the supervisor bound.
+    public var ownsRedirectListener = true
+    public var signalFD: AvianSocket = noSocket
 
     /// One shared header table: parsing and environ/scope construction happen
     /// back to back for a single request, so there is never a second live set.
@@ -96,6 +99,9 @@ public struct Worker {
     public var asgiScope: ASGIScopeBuilder? = nil
     /// `loop.add_reader` callback for the poller descriptor.
     public var asgiDrainCallback: PyObj? = nil
+    /// Windows: the thread that waits on the poller for the loop; see
+    /// pg_bridge_start. nil elsewhere.
+    public var asgiBridge: OpaquePointer? = nil
     /// The periodic housekeeping callback.
     public var asgiTimerCallback: PyObj? = nil
     /// The `call_soon` callback that sends every response in `deferredFlush`.
@@ -160,7 +166,7 @@ public struct Worker {
     public var lastSweep: UInt64 = 0
     public var acceptSuspended = false
 
-    public init(config: ServerConfig, listenFD: Int32, poller: Poller) {
+    public init(config: ServerConfig, listenFD: AvianSocket, poller: Poller) {
         self.config = config
         self.listenFD = listenFD
         self.poller = poller
@@ -192,7 +198,7 @@ public struct Worker {
             Log.error("failed to register the listening socket")
             return false
         }
-        if signalFD >= 0 {
+        if isSocket(signalFD) {
             _ = poller.add(signalFD, .read, token: PollToken.signals)
         }
         return true
@@ -214,7 +220,7 @@ public struct Worker {
         let c = table[slot]
         // An HTTP/2 stream has no descriptor of its own; interest belongs to
         // the connection carrying it.
-        if c.pointee.fd < 0 { return }
+        if !isSocket(c.pointee.fd) { return }
         if c.pointee.interest == mask.rawValue { return }
         let token = PollToken.make(slot: slot, generation: c.pointee.generation)
         _ = poller.modify(c.pointee.fd, mask, token: token)
@@ -343,11 +349,11 @@ public struct Worker {
                         Int8(0), Int8(0), Int8(0), Int8(0), Int8(0), Int8(0), Int8(0), Int8(0),
                         Int8(0), Int8(0), Int8(0), Int8(0), Int8(0), Int8(0), Int8(0), Int8(0))
             var port: UInt16 = 0
-            let fd: Int32 = withUnsafeMutableBytes(of: &peer) { raw in
+            let fd: AvianSocket = withUnsafeMutableBytes(of: &peer) { raw in
                 av_accept(listenFD, raw.baseAddress!.assumingMemoryBound(to: CChar.self),
                           48, &port)
             }
-            if fd < 0 {
+            if !isSocket(fd) {
                 let e = av_errno()
                 if av_err_is_again(e) != 0 || av_err_is_intr(e) != 0 { return }
                 if e == EMFILE || e == ENFILE {
@@ -438,7 +444,7 @@ public struct Worker {
     }
 
     /// Table is full: answer honestly and hang up instead of queueing.
-    func rejectOverCapacity(_ fd: Int32) {
+    func rejectOverCapacity(_ fd: AvianSocket) {
         Metrics.add(AV_M_CONNECTIONS_REJECTED)
         let msg: StaticString = """
         HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\nContent-Length: 19\r\n\r\nService Unavailable
@@ -892,7 +898,7 @@ public struct Worker {
     mutating func flushSoon(_ slot: Int) {
         let c = table[slot]
         // A stream writes into its connection, which has its own pacing.
-        if c.pointee.isStream || c.pointee.fd < 0 {
+        if c.pointee.isStream || !isSocket(c.pointee.fd) {
             _ = flush(slot)
             return
         }
@@ -1567,10 +1573,10 @@ public struct Worker {
         }
 
         endTLS(slot)
-        if c.pointee.fd >= 0 {
+        if isSocket(c.pointee.fd) {
             _ = poller.remove(c.pointee.fd)
             _ = av_close(c.pointee.fd)
-            c.pointee.fd = -1
+            c.pointee.fd = noSocket
         }
         // A stream never took a buffer from the pool.
         if wasStream {
@@ -1602,7 +1608,7 @@ public struct Worker {
         if now &- lastSweep < 1000 { return }
         lastSweep = now
         dates.refresh()
-        if metricsFD >= 0 || redirectFD >= 0 { sweepScrapes(now: now) }
+        if isSocket(metricsFD) || isSocket(redirectFD) { sweepScrapes(now: now) }
 
         // Past the grace period, whatever is still in flight is not going to
         // finish. Dropping it is what turns "shut down when convenient" into a
@@ -1761,9 +1767,9 @@ public struct Worker {
         // it polled instead would have a draining worker compete for
         // connections it is about to stop serving.
         _ = poller.modify(listenFD, [], token: PollToken.listener)
-        if ownsListener && listenFD >= 0 {
+        if ownsListener && isSocket(listenFD) {
             _ = av_close(listenFD)
-            listenFD = -1
+            listenFD = noSocket
         }
         // The redirect port too: this worker's socket leaves the SO_REUSEPORT
         // group, so the kernel stops handing it connections nobody will serve.

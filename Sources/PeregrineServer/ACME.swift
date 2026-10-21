@@ -24,6 +24,8 @@
 import Glibc
 #elseif canImport(Darwin)
 import Darwin
+#elseif canImport(ucrt)
+import ucrt
 #endif
 
 import CAvian
@@ -503,7 +505,7 @@ struct ACMEClient {
     /// Asks for a resource until its status leaves `pending`/`processing`.
     mutating func poll(_ url: String, until done: String, attempts: Int = 90) -> ACMEJSON? {
         for attempt in 0..<attempts {
-            _ = usleep(attempt == 0 ? 250_000 : 1_000_000)
+            av_sleep_ms(attempt == 0 ? 250 : 1000)
             guard let response = post(url, payload: nil), response.status == 200,
                   let json = response.json, let status = json["status"]?.string else {
                 return nil

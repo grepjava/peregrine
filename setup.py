@@ -119,6 +119,53 @@ def _pkg_config_name(mode, env):
     return "python3" + suffix
 
 
+def _windows():
+    return sys.platform == "win32"
+
+
+def _openssl_dir():
+    """Windows: the OpenSSL installation aviancore links against, or None.
+
+    OPENSSL_DIR names it; otherwise the location the Shining Light installer
+    uses. It needs include\\ and the MD import libraries under lib\\VC\\x64\\MD,
+    and its DLLs are vendored into the wheel next to the Swift runtime's.
+    """
+    for candidate in (os.environ.get("OPENSSL_DIR"),
+                      os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"),
+                                   "OpenSSL-Win64")):
+        if candidate and os.path.isfile(os.path.join(candidate, "include", "openssl", "ssl.h")):
+            return candidate
+    return None
+
+
+def _msvc_environment(env):
+    """Windows: the variables vcvars64.bat sets, merged into `env`.
+
+    The Swift toolchain links with the MSVC tools and libraries, and clang
+    finds the Windows SDK and OpenSSL through INCLUDE and LIB. A build started
+    from a developer prompt has them already.
+    """
+    if env.get("VCINSTALLDIR"):
+        return env
+    vswhere = os.path.join(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"),
+                           "Microsoft Visual Studio", "Installer", "vswhere.exe")
+    if not os.path.isfile(vswhere):
+        _fail("Visual Studio (or its Build Tools) is required to build on Windows:\n"
+              "Swift links with the MSVC toolchain. vswhere.exe was not found.")
+    install = subprocess.run([vswhere, "-latest", "-products", "*", "-property",
+                              "installationPath"], capture_output=True, text=True).stdout.strip()
+    vcvars = os.path.join(install, "VC", "Auxiliary", "Build", "vcvars64.bat")
+    if not os.path.isfile(vcvars):
+        _fail("vcvars64.bat was not found under %s; install the C++ build tools." % install)
+    dump = subprocess.run('"%s" >nul && set' % vcvars, shell=True, capture_output=True,
+                          text=True, env=env).stdout
+    for line in dump.splitlines():
+        key, sep, value = line.partition("=")
+        if sep:
+            env[key] = value
+    return env
+
+
 def _build_environment(mode):
     """The environment the Swift build runs in.
 
@@ -133,6 +180,20 @@ def _build_environment(mode):
         env["PEREGRINE_EXTENSION"] = "1"
     else:
         env.pop("PEREGRINE_EXTENSION", None)
+    if _windows():
+        # No pkg-config: Package.swift takes the installation directly, which
+        # holds include\ and the import libraries in libs\.
+        env["PEREGRINE_PYTHON_HOME"] = sys.base_prefix
+        env["PEREGRINE_PYTHON_FT"] = "1" if _free_threaded() else "0"
+        env = _msvc_environment(env)
+        openssl = _openssl_dir()
+        if openssl:
+            env["INCLUDE"] = os.pathsep.join([os.path.join(openssl, "include"),
+                                              env.get("INCLUDE", "")])
+            env["LIB"] = os.pathsep.join([os.path.join(openssl, "lib", "VC", "x64", "MD"),
+                                          env.get("LIB", "")])
+            env["PATH"] = os.pathsep.join([os.path.join(openssl, "bin"), env.get("PATH", "")])
+        return env
     candidates = [sysconfig.get_config_var("LIBPC"),
                   os.path.join(sysconfig.get_config_var("LIBDIR") or "", "pkgconfig")]
     found = [path for path in candidates if path and os.path.isdir(path)]
@@ -167,13 +228,23 @@ def _headers_free_threaded(package, env):
 
 
 def _check_toolchain(mode, env):
-    package = env["PEREGRINE_PYTHON_PC"]
-    if shutil.which("swift") is None:
+    if shutil.which("swift", path=env.get("PATH")) is None:
         _fail(
             "no Swift toolchain found on PATH.\n"
             "Peregrine is compiled at install time; install Swift 6.1 or newer\n"
             "from https://swift.org/install and try again."
         )
+    if _windows():
+        home = env["PEREGRINE_PYTHON_HOME"]
+        if not os.path.isfile(os.path.join(home, "include", "Python.h")) \
+                or not os.path.isdir(os.path.join(home, "libs")):
+            _fail("this Python installation (%s) has no include\\Python.h or no libs\\\n"
+                  "directory, which building the extension needs." % home)
+        if _openssl_dir() is None:
+            _fail("OpenSSL was not found. Install OpenSSL for Windows (x64, not Light)\n"
+                  "or set OPENSSL_DIR to an installation with include\\ and lib\\VC\\x64\\MD.")
+        return
+    package = env["PEREGRINE_PYTHON_PC"]
     if shutil.which("pkg-config") is None:
         _fail("pkg-config is required to locate the Python development files.")
     probe = subprocess.run(["pkg-config", "--exists", package], env=env)
@@ -255,6 +326,13 @@ def _check_import(build_lib):
     env = os.environ.copy()
     for key in ("LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH", "PYTHONPATH"):
         env.pop(key, None)
+    if _windows():
+        # Windows finds DLLs on PATH, so PATH loses everything but the system
+        # and this Python: the Swift runtime and OpenSSL have to come from the
+        # copies vendored into the package.
+        root = os.environ.get("SystemRoot", r"C:\Windows")
+        env["PATH"] = os.pathsep.join([os.path.join(root, "System32"), root,
+                                       sys.base_prefix])
     result = subprocess.run([sys.executable, "-c", probe], cwd=build_lib,
                             capture_output=True, text=True, env=env)
     if result.returncode != 0:
@@ -424,7 +502,76 @@ def _relocate_macos(target, lib_dir):
     )
 
 
-def _relocate(target, lib_dir):
+def _pe_imports(path):
+    """The DLL names a Windows executable or DLL imports, read from its PE
+    import directory. Delay-loaded imports are not followed."""
+    import struct
+
+    with open(path, "rb") as fh:
+        data = fh.read()
+    pe = struct.unpack_from("<I", data, 0x3C)[0]
+    if data[pe:pe + 4] != b"PE\0\0":
+        return []
+    sections_count = struct.unpack_from("<H", data, pe + 6)[0]
+    optional_size = struct.unpack_from("<H", data, pe + 20)[0]
+    optional = pe + 24
+    pe32_plus = struct.unpack_from("<H", data, optional)[0] == 0x20B
+    directories = optional + (112 if pe32_plus else 96)
+    import_rva = struct.unpack_from("<I", data, directories + 8)[0]
+    sections = [struct.unpack_from("<IIII", data, optional + optional_size + 40 * i + 8)
+                for i in range(sections_count)]
+
+    def offset(rva):
+        for virtual_size, address, raw_size, raw in sections:
+            if address <= rva < address + max(virtual_size, raw_size):
+                return rva - address + raw
+        return None
+
+    names = []
+    entry = offset(import_rva) if import_rva else None
+    while entry is not None:
+        name_rva = struct.unpack_from("<I", data, entry + 12)[0]
+        if name_rva == 0:
+            break
+        start = offset(name_rva)
+        names.append(data[start:data.index(b"\0", start)].decode("ascii"))
+        entry += 20
+    return names
+
+
+def _relocate_windows(target, lib_dir, env):
+    """Vendors every DLL the extension needs that a Windows machine with this
+    Python does not already have: the Swift runtime and OpenSSL. Found on the
+    build's PATH and followed transitively. The system's own DLLs, the C
+    runtime Python ships with (vcruntime140) and python3x.dll stay where they
+    are; peregrine/__init__.py adds `lib_dir` to the DLL search path."""
+    system = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32").lower()
+    search = [d for d in env.get("PATH", "").split(os.pathsep) if d]
+    keep_out = ("api-ms-", "ext-ms-", "python", "vcruntime140")
+    found = {}
+    pending = [target]
+    while pending:
+        for name in _pe_imports(pending.pop()):
+            key = name.lower()
+            if key in found or key.startswith(keep_out):
+                continue
+            path = next((os.path.join(d, name) for d in search
+                         if os.path.isfile(os.path.join(d, name))), None)
+            if path is None or os.path.dirname(os.path.abspath(path)).lower().startswith(system):
+                continue
+            found[key] = path
+            pending.append(path)
+    if not found:
+        message = "no Swift runtime DLLs were found to vendor next to %s" % target
+        if _require_relocate():
+            _fail(message)
+        sys.stderr.write("peregrine: %s\n" % message)
+        return
+    copied = _copy_runtime(lib_dir, {os.path.basename(p): p for p in found.values()})
+    sys.stderr.write("peregrine: vendored %d DLLs into %s\n" % (len(copied), lib_dir))
+
+
+def _relocate(target, lib_dir, env=None):
     """Vendors the Swift runtime into `lib_dir` and points `target` at it.
 
     A wheel has to run on a machine that has never seen this toolchain.
@@ -435,6 +582,8 @@ def _relocate(target, lib_dir):
         _relocate_linux(target, lib_dir)
     elif sys.platform == "darwin":
         _relocate_macos(target, lib_dir)
+    elif _windows():
+        _relocate_windows(target, lib_dir, env or os.environ)
     elif _require_relocate():
         _fail("relocating the server is not implemented on %s" % sys.platform)
     else:
@@ -487,6 +636,9 @@ class BuildWithSwift(build_py):
         sys.stderr.write("peregrine: %s%s\n"
                          % ("PEREGRINE_EXTENSION=1 " if mode == "extension" else "",
                             " ".join(command)))
+        # Resolved against the build environment's PATH: Windows looks up a
+        # bare name on this process's PATH instead.
+        command[0] = shutil.which("swift", path=env.get("PATH")) or "swift"
         result = subprocess.run(command, cwd=HERE, env=env)
         if result.returncode != 0:
             _fail("the Swift build failed; see the output above.")
@@ -495,13 +647,16 @@ class BuildWithSwift(build_py):
 
         package_dir = os.path.join(self.build_lib, "peregrine")
         if mode == "extension":
-            self._install_extension(scratch, package_dir)
+            self._install_extension(scratch, package_dir, env)
         else:
             self._install_binary(scratch, package_dir)
 
-    def _install_extension(self, scratch, package_dir):
-        library = "lib%s%s" % (EXTENSION_PRODUCT,
-                               ".dylib" if sys.platform == "darwin" else ".so")
+    def _install_extension(self, scratch, package_dir, env):
+        if _windows():
+            library = "%s.dll" % EXTENSION_PRODUCT
+        else:
+            library = "lib%s%s" % (EXTENSION_PRODUCT,
+                                   ".dylib" if sys.platform == "darwin" else ".so")
         built = os.path.join(scratch, "release", library)
         if not os.path.exists(built):
             _fail("the Swift build produced no library at %s" % built)
@@ -511,7 +666,7 @@ class BuildWithSwift(build_py):
         target = os.path.join(package_dir,
                               "_native" + sysconfig.get_config_var("EXT_SUFFIX"))
         shutil.copy2(built, target)
-        _relocate(target, os.path.join(package_dir, "_swift"))
+        _relocate(target, os.path.join(package_dir, "_swift"), env)
         loaded = _check_import(self.build_lib)
         sys.stderr.write("peregrine: %s imports as peregrine._native\n" % loaded)
 

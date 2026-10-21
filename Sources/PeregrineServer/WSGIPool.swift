@@ -196,8 +196,8 @@ public final class WSGIPool {
     private var running = 0
 
     /// Read end of the completion pipe, registered with the poller.
-    public let wakeupFD: Int32
-    private let wakeWriteFD: Int32
+    public let wakeupFD: AvianSocket
+    private let wakeWriteFD: AvianSocket
 
     let highWaterMark: Int
     let lowWaterMark: Int
@@ -213,9 +213,9 @@ public final class WSGIPool {
         guard let m = av_mutex_new(), let wc = av_cond_new(), let dc = av_cond_new() else {
             return nil
         }
-        var fds: (Int32, Int32) = (-1, -1)
+        var fds: (AvianSocket, AvianSocket) = (noSocket, noSocket)
         let ok = withUnsafeMutablePointer(to: &fds) { p -> Bool in
-            p.withMemoryRebound(to: Int32.self, capacity: 2) { av_pipe($0) == 0 }
+            p.withMemoryRebound(to: AvianSocket.self, capacity: 2) { av_pipe($0) == 0 }
         }
         guard ok, let application = worker.pointee.wsgi?.app else { return nil }
 

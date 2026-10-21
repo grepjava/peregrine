@@ -76,6 +76,24 @@ void  pg_py_after_fork_child(void);
 /* The peregrine._native module; `serve` is its METH_O implementation. */
 PyObject *pg_native_module_create(void *serve);
 
+/* --- asyncio on Windows ---------------------------------------------------
+ * Elsewhere the poller is handed to the loop with add_reader. On Windows the
+ * default loop (Proactor) has no add_reader, and the poller (wepoll) is not a
+ * socket a selector loop could watch either. A thread of ours waits on the
+ * poller instead, into the poller's own event array (`events`, room for
+ * `capacity`), and hands `drain` to the loop with call_soon_threadsafe. drain
+ * takes the count with pg_bridge_take, handles exactly those events, and
+ * calls pg_bridge_done, after which the thread waits again: the poller is
+ * level-triggered, and waiting sooner would collect the same events twice.
+ * NULL from pg_bridge_start, and on every other platform, which needs none. */
+typedef struct pg_bridge pg_bridge;
+pg_bridge *pg_bridge_start(PyObject *loop, PyObject *drain, uintptr_t poller,
+                           void *events, int capacity);
+int  pg_bridge_take(pg_bridge *b);
+void pg_bridge_done(pg_bridge *b);
+/* Stops and joins the thread, with the GIL released while it waits. */
+void pg_bridge_stop(pg_bridge *b);
+
 /* --- reference counting -------------------------------------------------- */
 
 void  pg_incref(PyObject *o);
@@ -107,7 +125,7 @@ PyObject *pg_str_intern(const char *s);
 /* a + ", " + b, for the PEP 3333 rule that repeated request headers are
  * folded into one comma-separated environ value. */
 PyObject *pg_str_join_comma(PyObject *a, PyObject *b);
-PyObject *pg_int(long v);
+PyObject *pg_int(intptr_t v);
 PyObject *pg_tuple2(PyObject *a, PyObject *b);          /* new refs to a, b */
 pg_ssize_t pg_tuple_size(PyObject *t);
 PyObject *pg_tuple_get(PyObject *t, pg_ssize_t i);      /* borrowed */
@@ -152,7 +170,7 @@ int  pg_is_list(PyObject *o);
 int  pg_is_true(PyObject *o);          /* PyObject_IsTrue, -1 on error */
 int  pg_is(PyObject *a, PyObject *b);  /* identity */
 int  pg_is_callable(PyObject *o);
-long pg_int_as_long(PyObject *o);      /* -1 + error on failure */
+intptr_t pg_int_as_long(PyObject *o);  /* -1 + error on failure */
 PyObject *pg_getattr(PyObject *o, const char *name);
 PyObject *pg_getattr_obj(PyObject *o, PyObject *name);
 int pg_hasattr(PyObject *o, const char *name);

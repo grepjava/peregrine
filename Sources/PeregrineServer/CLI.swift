@@ -11,6 +11,8 @@
 import Glibc
 #elseif canImport(Darwin)
 import Darwin
+#elseif canImport(ucrt)
+import ucrt
 #endif
 
 import CAvian
@@ -217,7 +219,7 @@ public enum PeregrineCLI {
               peregrine --workers 0 --free-threaded myapp.asgi:app
 
             """
-            _ = av_write(1, usage.utf8Start, usage.utf8CodeUnitCount)
+            _ = av_write_stdout(usage.utf8Start, usage.utf8CodeUnitCount)
         }
 
         let version: StaticString = "peregrine 1.1.8"
@@ -263,7 +265,7 @@ public enum PeregrineCLI {
             }
             let newline: StaticString = "\n"
             append(newline.utf8Start, newline.utf8CodeUnitCount)
-            buf.withUnsafeBufferPointer { _ = av_write(1, $0.baseAddress!, n) }
+            buf.withUnsafeBufferPointer { _ = av_write_stdout($0.baseAddress!, n) }
         }
 
         var config = ServerConfig()

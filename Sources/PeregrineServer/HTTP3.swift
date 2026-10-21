@@ -108,7 +108,7 @@ extension Worker {
             return
         }
         let c = table[slot]
-        c.pointee.fd = -1
+        c.pointee.fd = noSocket
         c.pointee.parentSlot = -1
         c.pointee.state = .http3
         c.pointee.interest = 0
@@ -776,7 +776,7 @@ extension Worker {
         if slot < 0 { return -1 }
         let p = table[parent]
         let s = table[slot]
-        s.pointee.fd = -1
+        s.pointee.fd = noSocket
         s.pointee.parentSlot = Int32(parent)
         s.pointee.qstreamID = streamID
         s.pointee.streamID = 0

@@ -43,6 +43,18 @@ BIN = sys.argv[1] if len(sys.argv) > 1 else os.path.expanduser("~/pgbuild/releas
 # The free-threaded section below sets its own flags and ignores this.
 EXTRA = shlex.split(os.environ.get("PEREGRINE_EXTRA_ARGS", ""))
 
+# Windows has no signals to send another process. A server started in a
+# process group of its own can be sent Ctrl-Break, which it takes as SIGTERM;
+# anything else ends it outright, as SIGKILL would.
+WINDOWS = sys.platform == "win32"
+NEW_GROUP = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if WINDOWS else {}
+
+
+def windows_signal(sig):
+    if not WINDOWS:
+        return sig
+    return signal.CTRL_BREAK_EVENT if sig in (signal.SIGTERM, signal.SIGINT) else signal.SIGTERM
+
 PASS = 0
 FAIL = 0
 
@@ -97,15 +109,25 @@ class Server:
         environment = dict(os.environ)
         if env:
             environment.update(env)
+        # A file rather than a pipe: nothing reads the output until the server
+        # has stopped, and a worker that fills a pipe -- 4 KiB on Windows, two
+        # long access-log lines -- blocks on its next log line.
+        self.log = tempfile.TemporaryFile()
         self.proc = subprocess.Popen(cmd, env=environment,
-                                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+                                     stdout=self.log, stderr=subprocess.STDOUT,
+                                     **NEW_GROUP)
         self.wait_ready()
+
+    def output(self):
+        """Everything the server has written so far."""
+        self.log.seek(0)
+        return self.log.read()
 
     def wait_ready(self, timeout=15.0):
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             if self.proc.poll() is not None:
-                out = self.proc.stdout.read().decode(errors="replace")
+                out = self.output().decode(errors="replace")
                 raise RuntimeError("server exited during start-up:\n" + out)
             try:
                 s = self.connect()
@@ -161,7 +183,7 @@ class Server:
         if self.proc.poll() is not None:
             return self.proc.returncode, 0.0
         started = time.monotonic()
-        self.proc.send_signal(sig)
+        self.proc.send_signal(windows_signal(sig))
         try:
             self.proc.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
@@ -649,6 +671,10 @@ def test_graceful_shutdown():
 
 def test_multiworker_unix():
     print("\nMultiworker unix socket")
+    if not hasattr(socket, "AF_UNIX"):
+        # Windows has unix sockets, but this Python's socket module does not.
+        print("  --   skipped: no AF_UNIX in this Python")
+        return
     path = os.path.join(tempfile.gettempdir(), "peregrine-mw-%d.sock" % os.getpid())
     if os.path.exists(path):
         os.unlink(path)
@@ -1142,7 +1168,7 @@ def test_access_log():
                     s.close()
         finally:
             server.stop()
-        return server.proc.stdout.read().split(b"\n")
+        return server.output().split(b"\n")
 
     def served(args, raw_requests):
         """The same, decoded, for the checks that are about text."""
@@ -1479,7 +1505,8 @@ def test_worker_restart():
         check("both workers serve TCP connections (%d seen)" % len(pids), len(pids) >= 1)
 
         victim = int(sorted(pids)[0])
-        os.kill(victim, signal.SIGKILL)
+        # Windows' os.kill with anything but the console events terminates.
+        os.kill(victim, signal.SIGTERM if WINDOWS else signal.SIGKILL)
         time.sleep(1.0)
         replaced = set()
         for _ in range(40):

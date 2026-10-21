@@ -39,6 +39,8 @@
 import Glibc
 #elseif canImport(Darwin)
 import Darwin
+#elseif canImport(ucrt)
+import ucrt
 #endif
 
 import CAvian
@@ -55,6 +57,13 @@ public enum Peregrine {
     public static func run(config: ServerConfig) -> Int32 {
         Log.level = config.logLevel
         Log.pid = Int(av_getpid())
+        // On Windows a worker is this program started again (see
+        // runSpawnedWorker), and it comes back through here. The ACME helper
+        // has nothing more to do here than its one job.
+        let spawned = spawnedRole()
+        if spawned == "acme" {
+            return config.acmeEnabled && ACME.obtain(ACME.settings(config)) ? 0 : 1
+        }
         // Inside python (peregrine._native) the process is named "python" until
         // told otherwise, and every worker forked from here inherits the name.
         av_set_process_name("peregrine")
@@ -112,7 +121,7 @@ public enum Peregrine {
                 }
             }
             guard let context = makeTLSContext(config) else { return 1 }
-            context.logCertificateNames()
+            if spawned == nil { context.logCertificateNames() }
         }
 
         let workerCount = config.resolvedWorkers
@@ -147,7 +156,7 @@ public enum Peregrine {
             let entries = slots
             let largest = config.cacheMaxObject / 1024
             let size = config.cacheSizeMiB
-            Log.info { line in
+            if spawned == nil { Log.info { line in
                 line.str("response cache: ")
                 line.int(size)
                 line.str(" MiB, room for ")
@@ -155,7 +164,7 @@ public enum Peregrine {
                 line.str(" responses, bodies up to ")
                 line.int(largest)
                 line.str(" KiB")
-            }
+            } }
         }
 
         // --rate-limit. Mapped here for the same reason as the metrics page:
@@ -172,14 +181,14 @@ public enum Peregrine {
             let unit: StaticString = config.rateLimitPeriodMs == 1000 ? " per second"
                 : config.rateLimitPeriodMs == 60_000 ? " per minute" : " per hour"
             let count = config.rateLimitCount
-            Log.info { line in
+            if spawned == nil { Log.info { line in
                 line.str("rate limit: ")
                 line.int(count)
                 line.str(unit)
                 line.str(", burst ")
                 line.int(burst)
                 line.str(", shared by every worker")
-            }
+            } }
         }
 
         // Everything runs under a supervisor, including a single worker and
@@ -192,6 +201,7 @@ public enum Peregrine {
         // did nothing at all. A lone worker ignores SIGHUP, and so does the
         // free-threaded thread supervisor -- silently, in both cases, which is
         // the worst way for a certbot deploy hook to fail.
+        if let spawned { return runSpawnedWorker(config, role: spawned) }
         return runSupervisor(config,
                              workers: config.freeThreaded ? 1 : max(1, workerCount),
                              listeners: workerCount)
@@ -253,8 +263,9 @@ public enum Peregrine {
         }
 
         let port = config.quicPort != 0 ? config.quicPort : config.port
-        let fd = av_bind_udp(config.host, port, 1, config.ipv6Only ? 1 : 0)
-        if fd < 0 {
+        let fd = isSocket(sharedQUICFD) ? sharedQUICFD
+            : av_bind_udp(config.host, port, 1, config.ipv6Only ? 1 : 0)
+        if !isSocket(fd) {
             let e = av_errno()
             Log.error { line in
                 line.str("cannot bind the QUIC socket: ")
@@ -277,8 +288,8 @@ public enum Peregrine {
 
     static func openListener(_ config: ServerConfig,
                              reusePort: Bool,
-                             unlinkStale: Bool) -> Int32? {
-        let fd: Int32
+                             unlinkStale: Bool) -> AvianSocket? {
+        let fd: AvianSocket
         if let path = config.unixPath {
             fd = av_listen_unix(path, config.backlog, unlinkStale ? 1 : 0)
         } else {
@@ -287,9 +298,9 @@ public enum Peregrine {
             // --request-start-header. On the listener so that accepted sockets
             // inherit it, and so that timestamping is already on when a
             // request that will queue behind a busy worker arrives.
-            if fd >= 0 && config.requestStartHeader { _ = av_set_rx_timestamps(fd) }
+            if isSocket(fd) && config.requestStartHeader { _ = av_set_rx_timestamps(fd) }
         }
-        if fd < 0 {
+        if !isSocket(fd) {
             let e = av_errno()
             Log.error { line in
                 line.str("cannot listen: ")
@@ -302,6 +313,117 @@ public enum Peregrine {
 
     static func removeUnixPath(_ config: ServerConfig) {
         if let path = config.unixPath { _ = av_unlink(path) }
+    }
+
+    /// Whether every worker accepts from one listening socket rather than each
+    /// from its own in an SO_REUSEPORT group. A unix path can only be bound
+    /// once; Windows has no such group to spread connections across, and a
+    /// second bind of the port fails there.
+    static func sharesOneListener(_ config: ServerConfig) -> Bool {
+        #if os(Windows)
+        return true
+        #else
+        return config.unixPath != nil
+        #endif
+    }
+
+    // MARK: - Windows worker processes
+
+    /// Windows: the sockets beyond the listener that workers share, bound
+    /// once by the supervisor for the reason `sharesOneListener` gives, and
+    /// inherited by each worker it starts. The metrics and redirect ports are
+    /// accepted from by every worker. HTTP/3 is served by one: a UDP socket
+    /// read by several processes would hand a connection's packets to
+    /// whichever read first, so only slot 0 is given it. noSocket where the
+    /// option is off, and always on POSIX, where each worker binds its own.
+    nonisolated(unsafe) static var sharedMetricsFD: AvianSocket = noSocket
+    nonisolated(unsafe) static var sharedRedirectFD: AvianSocket = noSocket
+    nonisolated(unsafe) static var sharedQUICFD: AvianSocket = noSocket
+
+    /// Binds the sockets above, in the supervisor, before the first worker.
+    static func openSharedSockets(_ config: ServerConfig) -> Bool {
+        func failed(_ what: StaticString) -> Bool {
+            let e = av_errno()
+            Log.error { line in
+                line.str(what)
+                line.cstr(av_strerror(e))
+            }
+            return false
+        }
+        if config.metricsPort != 0 {
+            let host = config.metricsHost ?? config.host
+            sharedMetricsFD = av_listen_tcp(host, config.metricsPort, 64, 0, config.ipv6Only ? 1 : 0)
+            if !isSocket(sharedMetricsFD) { return failed("cannot listen on the metrics port: ") }
+        }
+        if config.redirectHTTPPort != 0 {
+            sharedRedirectFD = av_listen_tcp(config.host, config.redirectHTTPPort, config.backlog, 0,
+                                             config.ipv6Only ? 1 : 0)
+            if !isSocket(sharedRedirectFD) { return failed("cannot listen on the --redirect-http port: ") }
+        }
+        if config.http3Enabled {
+            let port = config.quicPort != 0 ? config.quicPort : config.port
+            sharedQUICFD = av_bind_udp(config.host, port, 0, config.ipv6Only ? 1 : 0)
+            if !isSocket(sharedQUICFD) { return failed("cannot bind the QUIC socket: ") }
+        }
+        return true
+    }
+
+    /// The role `av_spawn_self` gave this process, or nil in a process nothing
+    /// spawned -- every process on POSIX, where workers are forked.
+    static func spawnedRole() -> String? {
+        var role = [CChar](repeating: 0, count: 64)
+        guard av_spawned(&role, 64) != 0 else { return nil }
+        return role.withUnsafeBufferPointer { String(cString: $0.baseAddress!) }
+    }
+
+    /// Windows: a worker process the supervisor started with `av_spawn_self`.
+    /// It ran the same start-up as the supervisor -- the shared regions it
+    /// mapped are the supervisor's, inherited -- and now becomes the worker
+    /// that `spawnWorker` would have forked. The role is
+    /// "worker <slot> <metrics slot> <flags>"; the sockets are the listener,
+    /// the write end of the readiness pipe, then the shared metrics, redirect
+    /// and QUIC sockets that the three flags mark as present.
+    static func runSpawnedWorker(_ config: ServerConfig, role: String) -> Int32 {
+        let parts = role.split(separator: " ")
+        guard parts.count == 4, parts[0] == "worker", let metricsSlot = Int(parts[2]) else {
+            Log.error { line in
+                line.str("started as a worker process with a role it does not understand: ")
+                role.withCString { line.cstr($0) }
+            }
+            return 1
+        }
+        let flags = Array(parts[3].utf8)
+        var socks = [AvianSocket](repeating: noSocket, count: 8)
+        let n = Int(socks.withUnsafeMutableBufferPointer { av_spawned_sockets($0.baseAddress, 8) })
+        let expected = 2 + flags.filter { $0 == UInt8(ascii: "1") }.count
+        guard flags.count == 3, n == expected else {
+            Log.error("started as a worker process without the sockets it needs")
+            return 1
+        }
+        Log.pid = Int(av_getpid())
+        let listener = socks[0]
+        readyPipeFD = socks[1]
+        var next = 2
+        func take(_ flag: Int) -> AvianSocket {
+            guard flags[flag] == UInt8(ascii: "1") else { return noSocket }
+            next += 1
+            return socks[next - 1]
+        }
+        sharedMetricsFD = take(0)
+        sharedRedirectFD = take(1)
+        sharedQUICFD = take(2)
+
+        if config.freeThreaded {
+            // Every thread accepts from the one listener; see sharesOneListener.
+            let count = max(1, config.resolvedWorkers)
+            let listeners = UnsafeMutablePointer<AvianSocket>.allocate(capacity: count)
+            listeners.initialize(repeating: listener, count: count)
+            defer { listeners.deallocate() }
+            return runFreeThreaded(config, workers: config.resolvedWorkers,
+                                   listeners: listeners, listenerCount: count,
+                                   metricsSlotBase: metricsSlot) ? 0 : 1
+        }
+        return runWorker(config, listenFD: listener, metricsSlot: metricsSlot) ? 0 : 1
     }
 
     // MARK: - Supervisor
@@ -329,12 +451,13 @@ public enum Peregrine {
         // with it -- however carefully the worker drained first.
         //
         // For unix there is one socket, because a path can only be bound once,
-        // and every worker accepts from it.
+        // and every worker accepts from it. Windows does the same for TCP; see
+        // sharesOneListener.
         let count = max(1, listenerCount)
-        let listeners = UnsafeMutablePointer<Int32>.allocate(capacity: count)
+        let listeners = UnsafeMutablePointer<AvianSocket>.allocate(capacity: count)
         defer { listeners.deallocate() }
-        listeners.initialize(repeating: -1, count: count)
-        if config.unixPath != nil {
+        listeners.initialize(repeating: noSocket, count: count)
+        if sharesOneListener(config) {
             guard let fd = openListener(config, reusePort: false, unlinkStale: true) else {
                 return 1
             }
@@ -351,6 +474,10 @@ public enum Peregrine {
             }
         }
         defer { removeUnixPath(config) }
+
+        #if os(Windows)
+        guard openSharedSockets(config) else { return 1 }
+        #endif
 
         let signalFD = av_signal_pipe_init()
         let pids = UnsafeMutablePointer<pid_t>.allocate(capacity: workers)
@@ -382,7 +509,7 @@ public enum Peregrine {
 
         /// Forks the worker for `slot`, handing it that slot's listener and
         /// letting it drop the handles on every other slot's.
-        func spawn(_ slot: Int) -> (pid: pid_t, ready: Int32) {
+        func spawn(_ slot: Int) -> (pid: pid_t, ready: AvianSocket) {
             spawnWorker(config, listeners: listeners, listenerCount: count,
                         index: slot, metricsSlot: metricsSlotOf[slot])
         }
@@ -391,7 +518,7 @@ public enum Peregrine {
             let started = spawn(i)
             // Nothing is waiting on readiness at start-up: there is no worker
             // being replaced, so there is nothing to hold on to it for.
-            if started.ready >= 0 { _ = av_close(started.ready) }
+            if isSocket(started.ready) { _ = av_close(started.ready) }
             pids[i] = started.pid
             if pids[i] < 0 { return 1 }
         }
@@ -434,7 +561,13 @@ public enum Peregrine {
                 acmeNextCheck = now &+ 12 * 3_600_000
                 return
             }
+            #if os(Windows)
+            // A copy of this program that sees its role and runs only the
+            // client; it is handed no sockets at all.
+            let pid = av_spawn_self("acme", nil, 0)
+            #else
             let pid = av_fork()
+            #endif
             if pid == 0 {
                 // SIGTERM at shutdown has to end the helper, not be written
                 // into the supervisor's pipe by the handler it inherited.
@@ -442,7 +575,7 @@ public enum Peregrine {
                 // The helper serves nothing, so it lets go of the sockets: a
                 // helper still waiting on a slow CA after the server has gone
                 // must not be what keeps the port bound.
-                for i in 0..<count where listeners[i] >= 0 { _ = av_close(listeners[i]) }
+                for i in 0..<count where isSocket(listeners[i]) { _ = av_close(listeners[i]) }
                 _ = av_close(signalFD)
                 _exit(ACME.obtain(settings) ? 0 : 1)
             }
@@ -496,7 +629,7 @@ public enum Peregrine {
         // accept queue unserved for as long as an interpreter takes to boot.
         var handoverSlot = -1
         var handoverOld: pid_t = 0
-        var handoverReadyFD: Int32 = -1
+        var handoverReadyFD: AvianSocket = noSocket
         var handoverDeadline: UInt64 = 0
 
         /// How long to wait for a replacement to report ready before retiring
@@ -521,10 +654,10 @@ public enum Peregrine {
 
         /// Clears the handover state, releasing the readiness pipe.
         func clearHandover() {
-            if handoverReadyFD >= 0 { _ = av_close(handoverReadyFD) }
+            if isSocket(handoverReadyFD) { _ = av_close(handoverReadyFD) }
             handoverSlot = -1
             handoverOld = 0
-            handoverReadyFD = -1
+            handoverReadyFD = noSocket
             handoverDeadline = 0
         }
 
@@ -612,11 +745,11 @@ public enum Peregrine {
             // milliseconds an interpreter takes to boot, so the idle quarter
             // second would be most of the delay it exists to remove. The same
             // goes for a --reload notification waiting for a save to settle.
-            let waitMs: Int32 = handoverReadyFD >= 0 || watcher?.checkSoon == true ? 5 : 250
+            let waitMs: Int32 = isSocket(handoverReadyFD) || watcher?.checkSoon == true ? 5 : 250
             // The reload watcher's descriptor wakes the loop the moment a
             // source file changes. Not while shutting down: nothing drains it
             // then, and a readable descriptor nobody reads would spin here.
-            let watchFD: Int32 = shuttingDown ? -1 : (watcher?.notifyFD ?? -1)
+            let watchFD: AvianSocket = shuttingDown ? noSocket : (watcher?.notifyFD ?? noSocket)
             var buf = (UInt8(0), UInt8(0), UInt8(0), UInt8(0), UInt8(0), UInt8(0), UInt8(0), UInt8(0))
             let n = withUnsafeMutableBytes(of: &buf) { raw -> Int in
                 let r = av_poll_either(signalFD, watchFD, waitMs)
@@ -624,7 +757,7 @@ public enum Peregrine {
                 return av_read(signalFD, raw.baseAddress!, 8)
             }
 
-            if handoverReadyFD >= 0 {
+            if isSocket(handoverReadyFD) {
                 // Readable is the replacement saying it is accepting; an error
                 // is the pipe hanging up because it died first, which the reap
                 // below turns into keeping the worker it was replacing.
@@ -646,7 +779,7 @@ public enum Peregrine {
                         // all that is needed here is to stop watching a pipe
                         // with nothing left to say.
                         _ = av_close(handoverReadyFD)
-                        handoverReadyFD = -1
+                        handoverReadyFD = noSocket
                     }
                 } else if handoverDeadline > 0 && av_monotonic_ms() > handoverDeadline {
                     Log.error("a replacement worker has not started serving after 60s;")
@@ -807,7 +940,7 @@ public enum Peregrine {
                         // A crash replacement has nobody to hand over from, so
                         // its readiness is nothing to wait for either.
                         let restarted = spawn(index)
-                        if restarted.ready >= 0 { _ = av_close(restarted.ready) }
+                        if isSocket(restarted.ready) { _ = av_close(restarted.ready) }
                         pids[index] = restarted.pid
                         if pids[index] > 0 { alive += 1 }
                     }
@@ -817,7 +950,7 @@ public enum Peregrine {
         // Every worker is gone, so these are the last handles on the listeners.
         // A unix socket is one descriptor repeated across the slots, so each
         // distinct one is closed once.
-        for i in 0..<count where listeners[i] >= 0 {
+        for i in 0..<count where isSocket(listeners[i]) {
             var alreadyClosed = false
             for k in 0..<i where listeners[k] == listeners[i] { alreadyClosed = true }
             if !alreadyClosed { _ = av_close(listeners[i]) }
@@ -830,18 +963,44 @@ public enum Peregrine {
     /// readiness pipe, which becomes readable when the worker starts accepting
     /// and hangs up if it dies first. The caller owns that descriptor.
     static func spawnWorker(_ config: ServerConfig,
-                            listeners: UnsafeMutablePointer<Int32>,
+                            listeners: UnsafeMutablePointer<AvianSocket>,
                             listenerCount: Int,
                             index: Int,
-                            metricsSlot: Int) -> (pid: pid_t, ready: Int32) {
-        var fds: (Int32, Int32) = (-1, -1)
+                            metricsSlot: Int) -> (pid: pid_t, ready: AvianSocket) {
+        var fds: (AvianSocket, AvianSocket) = (noSocket, noSocket)
         let piped = withUnsafeMutableBytes(of: &fds) { raw in
-            av_pipe(raw.baseAddress!.assumingMemoryBound(to: Int32.self))
+            av_pipe(raw.baseAddress!.assumingMemoryBound(to: AvianSocket.self))
         }
         if piped != 0 {
             Log.error("cannot create the worker readiness pipe")
-            return (-1, -1)
+            return (-1, noSocket)
         }
+
+        #if os(Windows)
+        // No fork: the worker is this program started again, handed the
+        // slot's listener, the write end of the readiness pipe and whichever
+        // shared sockets are in use. See runSpawnedWorker for the other side.
+        var socks: [AvianSocket] = [listeners[index], fds.1]
+        var flags = ""
+        let quic = index == 0 ? sharedQUICFD : noSocket
+        for shared in [sharedMetricsFD, sharedRedirectFD, quic] {
+            if isSocket(shared) { socks.append(shared) }
+            flags += isSocket(shared) ? "1" : "0"
+        }
+        let role = "worker \(index) \(metricsSlot) \(flags)"
+        let pid = socks.withUnsafeBufferPointer { av_spawn_self(role, $0.baseAddress, Int32($0.count)) }
+        _ = av_close(fds.1)
+        if pid < 0 {
+            let e = av_errno()
+            Log.error { line in
+                line.str("cannot start a worker process: ")
+                line.cstr(av_strerror(e))
+            }
+            _ = av_close(fds.0)
+            return (-1, noSocket)
+        }
+        return (pid, fds.0)
+        #else
 
         // Not plain fork: a signal that arrived before the child had a pipe of
         // its own was lost. See av_fork_worker.
@@ -858,7 +1017,7 @@ public enum Peregrine {
             Log.error("fork failed")
             _ = av_close(fds.0)
             _ = av_close(fds.1)
-            return (-1, -1)
+            return (-1, noSocket)
         }
         if pid > 0 {
             // The supervisor keeps the read end only. Holding the write end
@@ -891,12 +1050,12 @@ public enum Peregrine {
         // worker. A unix socket is the same descriptor in every slot, which is
         // what the comparison against `mine` is for.
         let mine = listeners[index]
-        for k in 0..<listenerCount where listeners[k] >= 0 && listeners[k] != mine {
+        for k in 0..<listenerCount where isSocket(listeners[k]) && listeners[k] != mine {
             _ = av_close(listeners[k])
         }
 
         var fd = mine
-        if fd < 0 {
+        if !isSocket(fd) {
             guard let opened = openListener(config, reusePort: true, unlinkStale: false) else {
                 exitProcess(1)
             }
@@ -904,6 +1063,7 @@ public enum Peregrine {
         }
         let ok = runWorker(config, listenFD: fd, metricsSlot: metricsSlot)
         exitProcess(ok ? 0 : 1)
+        #endif
     }
 
     static func exitProcess(_ code: Int32) -> Never {
@@ -1001,10 +1161,11 @@ public enum Peregrine {
     /// supervising thread for a worker thread. Either way it carries signal
     /// numbers, so `handleSignals` does not know the difference.
     static func makeWorker(_ config: ServerConfig,
-                           listenFD: Int32,
-                           controlFD: Int32,
+                           listenFD: AvianSocket,
+                           controlFD: AvianSocket,
                            loaded: LoadedApplication,
-                           metricsSlot: Int = 0) -> UnsafeMutablePointer<Worker>? {
+                           metricsSlot: Int = 0,
+                           firstOfProcess: Bool = true) -> UnsafeMutablePointer<Worker>? {
         guard let poller = Poller(maxEvents: 256) else {
             Log.error("cannot create the readiness poller")
             return nil
@@ -1027,9 +1188,10 @@ public enum Peregrine {
             Metrics.bind(slot: metricsSlot)
             Metrics.set(AV_M_SLOTS_CAPACITY, UInt64(config.maxConnections))
             let host = config.metricsHost ?? config.host
-            let fd = av_listen_tcp(host, config.metricsPort, 64, 1,
-                                   config.ipv6Only ? 1 : 0)
-            if fd < 0 {
+            // On Windows the supervisor bound it once; see sharedMetricsFD.
+            let fd = isSocket(sharedMetricsFD) ? sharedMetricsFD
+                : av_listen_tcp(host, config.metricsPort, 64, 1, config.ipv6Only ? 1 : 0)
+            if !isSocket(fd) {
                 let e = av_errno()
                 Log.error { line in
                     line.str("cannot listen on the metrics port: ")
@@ -1041,9 +1203,11 @@ public enum Peregrine {
         }
         // --redirect-http, bound the same way.
         if config.redirectHTTPPort != 0 {
-            let fd = av_listen_tcp(config.host, config.redirectHTTPPort, config.backlog, 1,
-                                   config.ipv6Only ? 1 : 0)
-            if fd < 0 {
+            let fd = isSocket(sharedRedirectFD) ? sharedRedirectFD
+                : av_listen_tcp(config.host, config.redirectHTTPPort, config.backlog, 1,
+                                config.ipv6Only ? 1 : 0)
+            workerPtr.pointee.ownsRedirectListener = !isSocket(sharedRedirectFD)
+            if !isSocket(fd) {
                 let e = av_errno()
                 Log.error { line in
                     line.str("cannot listen on the --redirect-http port: ")
@@ -1053,7 +1217,14 @@ public enum Peregrine {
             }
             workerPtr.pointee.redirectFD = fd
         }
-        if config.http3Enabled {
+        #if os(Windows)
+        // One worker serves HTTP/3 on Windows, on the socket the supervisor
+        // bound: the first thread of the process slot 0 was given it to.
+        let servesQUIC = config.http3Enabled && firstOfProcess && isSocket(sharedQUICFD)
+        #else
+        let servesQUIC = config.http3Enabled
+        #endif
+        if servesQUIC {
             guard let listener = makeQUICListener(config) else { return nil }
             workerPtr.pointee.quic = listener
         }
@@ -1099,7 +1270,7 @@ public enum Peregrine {
     /// Set once before the interpreter boots and read once when it is serving,
     /// on the one thread that does either, so the unchecked global is the same
     /// kind of claim `Log.pid` makes.
-    nonisolated(unsafe) static var readyPipeFD: Int32 = -1
+    nonisolated(unsafe) static var readyPipeFD: AvianSocket = noSocket
 
     /// Tells the supervisor this process is now accepting.
     ///
@@ -1114,7 +1285,7 @@ public enum Peregrine {
     /// before it is ready the supervisor sees the read end hang up, rather than
     /// waiting out the timeout.
     static func signalReady() {
-        guard readyPipeFD >= 0 else { return }
+        guard isSocket(readyPipeFD) else { return }
         var byte: UInt8 = 1
         // The write fails with EPIPE whenever nobody is waiting -- at start-up
         // the supervisor drops the read end straight away, because there is no
@@ -1124,7 +1295,7 @@ public enum Peregrine {
             av_write(readyPipeFD, raw.baseAddress!, 1)
         }
         _ = av_close(readyPipeFD)
-        readyPipeFD = -1
+        readyPipeFD = noSocket
     }
 
     /// The "worker ready" line. `threads` is 0 for a worker process.
@@ -1151,7 +1322,7 @@ public enum Peregrine {
     }
 
     /// Everything from here down runs inside a worker process.
-    static func runWorker(_ config: ServerConfig, listenFD: Int32,
+    static func runWorker(_ config: ServerConfig, listenFD: AvianSocket,
                           metricsSlot: Int = 0) -> Bool {
         guard let loaded = bootInterpreter(config) else { return false }
         guard let workerPtr = makeWorker(config, listenFD: listenFD,

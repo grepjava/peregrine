@@ -36,7 +36,7 @@ import AvianCore
 /// The two share these places: both are one request, one response and a
 /// close, and neither ever reaches the application.
 public struct PendingScrape {
-    public var fd: Int32 = -1
+    public var fd: AvianSocket = noSocket
     public var deadlineMs: UInt64 = 0
     public var buf = ByteBuffer()
     /// Answered with a redirect rather than with metrics.
@@ -52,7 +52,7 @@ let scrapeMaxRequest = 4096
 extension Worker {
 
     public mutating func registerMetricsListener() -> Bool {
-        guard metricsFD >= 0 else { return true }
+        guard isSocket(metricsFD) else { return true }
         guard poller.add(metricsFD, .read, token: PollToken.metrics) else {
             Log.error("failed to register the metrics listener")
             return false
@@ -72,13 +72,13 @@ extension Worker {
             let fd = peer.withUnsafeMutableBufferPointer { raw in
                 av_accept(metricsFD, raw.baseAddress!, 48, &port)
             }
-            if fd < 0 { return }
+            if !isSocket(fd) { return }
             beginOneShot(fd, redirect: false)
         }
     }
 
     /// Reads what has arrived and decides whether the request is all there.
-    mutating func beginOneShot(_ fd: Int32, redirect: Bool) {
+    mutating func beginOneShot(_ fd: AvianSocket, redirect: Bool) {
         var buf = ByteBuffer()
         switch readScrape(fd, &buf) {
         case .complete:
@@ -108,7 +108,7 @@ extension Worker {
         }
     }
 
-    private mutating func answerOneShot(_ fd: Int32, redirect: Bool, _ request: ByteBuffer) {
+    private mutating func answerOneShot(_ fd: AvianSocket, redirect: Bool, _ request: ByteBuffer) {
         if redirect {
             serveRedirect(fd, request)
         } else {
@@ -117,7 +117,7 @@ extension Worker {
     }
 
     /// Takes a parked request out of its place, keeping what it had sent.
-    private mutating func takeOneShot(_ index: Int) -> (fd: Int32, redirect: Bool, buf: ByteBuffer) {
+    private mutating func takeOneShot(_ index: Int) -> (fd: AvianSocket, redirect: Bool, buf: ByteBuffer) {
         let taken = (fd: scrapes[index].fd, redirect: scrapes[index].redirect,
                      buf: scrapes[index].buf)
         scrapes[index].buf = ByteBuffer()
@@ -127,7 +127,7 @@ extension Worker {
 
     /// More of a parked scrape's request arrived.
     mutating func handleScrapeReadable(_ index: Int) {
-        guard index >= 0, index < scrapes.count, scrapes[index].fd >= 0 else { return }
+        guard index >= 0, index < scrapes.count, isSocket(scrapes[index].fd) else { return }
         let fd = scrapes[index].fd
         var buf = scrapes[index].buf
         let outcome = readScrape(fd, &buf)
@@ -150,7 +150,7 @@ extension Worker {
         var i = 0
         while i < scrapes.count {
             defer { i += 1 }
-            if scrapes[i].fd < 0 { continue }
+            if !isSocket(scrapes[i].fd) { continue }
             if now < scrapes[i].deadlineMs { continue }
             // Long enough. Answer from what there is rather than hang up: a
             // scrape's response never depended on the request, and a redirect
@@ -164,7 +164,7 @@ extension Worker {
     public mutating func closeScrapes() {
         var i = 0
         while i < scrapes.count {
-            if scrapes[i].fd >= 0 { releaseScrape(i, close: true) }
+            if isSocket(scrapes[i].fd) { releaseScrape(i, close: true) }
             i += 1
         }
     }
@@ -172,7 +172,7 @@ extension Worker {
     private func freeScrapeSlot() -> Int? {
         var i = 0
         while i < scrapes.count {
-            if scrapes[i].fd < 0 { return i }
+            if !isSocket(scrapes[i].fd) { return i }
             i += 1
         }
         return nil
@@ -195,12 +195,12 @@ extension Worker {
 
     private mutating func releaseScrape(_ index: Int, close: Bool) {
         let fd = scrapes[index].fd
-        if fd >= 0 { _ = poller.remove(fd) }
+        if isSocket(fd) { _ = poller.remove(fd) }
         scrapes[index].buf.destroy()
-        scrapes[index].fd = -1
+        scrapes[index].fd = noSocket
         scrapes[index].deadlineMs = 0
         scrapes[index].redirect = false
-        if close && fd >= 0 { _ = av_close(fd) }
+        if close && isSocket(fd) { _ = av_close(fd) }
     }
 
     private enum ScrapeRead {
@@ -211,7 +211,7 @@ extension Worker {
 
     /// Drains the socket into `buf` without blocking, and says whether a whole
     /// request head is now in there.
-    private func readScrape(_ fd: Int32, _ buf: inout ByteBuffer) -> ScrapeRead {
+    private func readScrape(_ fd: AvianSocket, _ buf: inout ByteBuffer) -> ScrapeRead {
         while true {
             if buf.readableBytes >= scrapeMaxRequest { return .complete }
             buf.reserve(1024)
@@ -255,7 +255,7 @@ extension Worker {
     /// agent that asked for /metrics and one that asked for / both want it;
     /// refusing the second would be a configuration error waiting to happen
     /// rather than a security boundary.
-    private mutating func serveScrape(_ fd: Int32) {
+    private mutating func serveScrape(_ fd: AvianSocket) {
         defer { _ = av_close(fd) }
 
         // This worker's own gauge, which the accept and close paths keep
@@ -286,7 +286,7 @@ extension Worker {
     /// delivered is dropped rather than waited for: the next one is 15 seconds
     /// away and the request path is not. A redirect is a few hundred bytes,
     /// which a fresh socket always takes.
-    func writeOneShot(_ fd: Int32, _ p: UnsafePointer<UInt8>, _ n: Int) {
+    func writeOneShot(_ fd: AvianSocket, _ p: UnsafePointer<UInt8>, _ n: Int) {
         var sent = 0
         var attempts = 16
         while sent < n && attempts > 0 {

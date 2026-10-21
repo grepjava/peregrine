@@ -163,7 +163,7 @@ PyObject *pg_str_join_comma(PyObject *a, PyObject *b) {
     return out;
 }
 
-PyObject *pg_int(long v) { return PyLong_FromLong(v); }
+PyObject *pg_int(intptr_t v) { return PyLong_FromSsize_t((Py_ssize_t)v); }
 
 PyObject *pg_tuple2(PyObject *a, PyObject *b) {
     PyObject *t = PyTuple_New(2);
@@ -261,7 +261,7 @@ int pg_is_list(PyObject *o)  { return PyList_Check(o); }
 int pg_is_true(PyObject *o)  { return PyObject_IsTrue(o); }
 int pg_is(PyObject *a, PyObject *b) { return a == b; }
 int pg_is_callable(PyObject *o) { return PyCallable_Check(o); }
-long pg_int_as_long(PyObject *o) { return PyLong_AsLong(o); }
+intptr_t pg_int_as_long(PyObject *o) { return (intptr_t)PyLong_AsSsize_t(o); }
 
 PyObject *pg_getattr(PyObject *o, const char *name) { return PyObject_GetAttrString(o, name); }
 PyObject *pg_getattr_obj(PyObject *o, PyObject *name) { return PyObject_GetAttr(o, name); }
@@ -584,10 +584,17 @@ int pg_py_gil_active(void) {
  * supervisor is a running python, and a child forked behind the interpreter's
  * back keeps the parent's locks and thread states exactly as they were at the
  * moment of the fork. These are the hooks os.fork() itself calls, and with no
- * interpreter they do nothing. */
+ * interpreter they do nothing.
+ * Windows has no fork: its workers are new processes, so the hooks are empty. */
+#if defined(_WIN32)
+void pg_py_before_fork(void)       {}
+void pg_py_after_fork_parent(void) {}
+void pg_py_after_fork_child(void)  {}
+#else
 void pg_py_before_fork(void)       { if (Py_IsInitialized()) PyOS_BeforeFork(); }
 void pg_py_after_fork_parent(void) { if (Py_IsInitialized()) PyOS_AfterFork_Parent(); }
 void pg_py_after_fork_child(void)  { if (Py_IsInitialized()) PyOS_AfterFork_Child(); }
+#endif
 
 static PyMethodDef g_native_methods[] = {
     {"serve", NULL, METH_O,
@@ -617,3 +624,98 @@ PyObject *pg_native_module_create(void *serve) {
 #endif
     return module;
 }
+
+/* ======================================================================== */
+/* asyncio on Windows: the poller bridge (see peregrine_py.h)               */
+/* ======================================================================== */
+
+#if defined(_WIN32)
+
+#include "avian_sys.h"
+#include <process.h>
+
+struct pg_bridge {
+    HANDLE thread;
+    HANDLE rearm;               /* auto-reset: drain has handled the batch */
+    volatile LONG stop;
+    uintptr_t poller;
+    av_event *events;
+    int capacity;
+    volatile LONG pending;      /* the batch drain is to handle */
+    PyObject *schedule;         /* loop.call_soon_threadsafe */
+    PyObject *drain;
+};
+
+static unsigned __stdcall bridge_thread(void *arg) {
+    pg_bridge *b = (pg_bridge *)arg;
+    while (!b->stop) {
+        /* A bounded wait, so that a stop is noticed without a wake of its own. */
+        int n = av_poll_wait((av_poll_t)b->poller, b->events, b->capacity, 250);
+        if (n <= 0) continue;
+        InterlockedExchange(&b->pending, n);
+        PyGILState_STATE state = PyGILState_Ensure();
+        PyObject *r = PyObject_CallOneArg(b->schedule, b->drain);
+        int closed = r == NULL;
+        if (r) Py_DECREF(r); else PyErr_Clear();   /* the loop has closed */
+        PyGILState_Release(state);
+        if (closed) break;
+        while (!b->stop && WaitForSingleObject(b->rearm, 250) == WAIT_TIMEOUT) {}
+    }
+    return 0;
+}
+
+pg_bridge *pg_bridge_start(PyObject *loop, PyObject *drain, uintptr_t poller,
+                           void *events, int capacity) {
+    pg_bridge *b = (pg_bridge *)calloc(1, sizeof *b);
+    if (!b) { PyErr_NoMemory(); return NULL; }
+    b->schedule = PyObject_GetAttrString(loop, "call_soon_threadsafe");
+    if (!b->schedule) { free(b); return NULL; }
+    Py_INCREF(drain);
+    b->drain = drain;
+    b->poller = poller;
+    b->events = (av_event *)events;
+    b->capacity = capacity;
+    b->rearm = CreateEventW(NULL, FALSE, FALSE, NULL);
+    uintptr_t t = b->rearm ? _beginthreadex(NULL, 0, bridge_thread, b, 0, NULL) : 0;
+    if (!t) {
+        if (b->rearm) CloseHandle(b->rearm);
+        Py_DECREF(b->schedule);
+        Py_DECREF(b->drain);
+        free(b);
+        PyErr_SetString(PyExc_OSError, "cannot start the poller thread");
+        return NULL;
+    }
+    b->thread = (HANDLE)t;
+    return b;
+}
+
+int pg_bridge_take(pg_bridge *b) { return b ? (int)InterlockedExchange(&b->pending, 0) : 0; }
+
+void pg_bridge_done(pg_bridge *b) { if (b) SetEvent(b->rearm); }
+
+void pg_bridge_stop(pg_bridge *b) {
+    if (!b) return;
+    InterlockedExchange(&b->stop, 1);
+    SetEvent(b->rearm);
+    Py_BEGIN_ALLOW_THREADS
+    WaitForSingleObject(b->thread, INFINITE);
+    Py_END_ALLOW_THREADS
+    CloseHandle(b->thread);
+    CloseHandle(b->rearm);
+    Py_DECREF(b->schedule);
+    Py_DECREF(b->drain);
+    free(b);
+}
+
+#else
+
+pg_bridge *pg_bridge_start(PyObject *loop, PyObject *drain, uintptr_t poller,
+                           void *events, int capacity) {
+    (void)loop; (void)drain; (void)poller; (void)events; (void)capacity;
+    return NULL;
+}
+int  pg_bridge_take(pg_bridge *b) { (void)b; return 0; }
+void pg_bridge_done(pg_bridge *b) { (void)b; }
+void pg_bridge_stop(pg_bridge *b) { (void)b; }
+
+#endif

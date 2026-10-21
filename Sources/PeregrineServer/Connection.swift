@@ -128,7 +128,7 @@ public struct ConnFlags: OptionSet, Sendable {
 }
 
 public struct Connection {
-    public var fd: Int32 = -1
+    public var fd: AvianSocket = noSocket
     /// An open file whose remaining bytes are the rest of this response, or -1.
     ///
     /// Set by a `--static-dir` route. The bytes never enter the process on the

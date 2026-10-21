@@ -33,3 +33,4 @@ graphify-out/
 # The rule and workflow that point an editor's agent at that index.
 .agents/rules/graphify.md
 .agents/workflows/graphify.md
+dist-win/

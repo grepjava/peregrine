@@ -97,16 +97,21 @@ def run_loop(loop, pollfd, drain):
     itself pollable, so asyncio watches it like any socket and calls back into
     Swift when connections become ready. One thread, one loop, no queues, no
     cross-thread wakeups, and no GIL ping-pong.
+
+    On Windows pollfd is None: the loop there cannot watch the poller, and a
+    thread the server runs schedules drain itself.
     """
     asyncio.set_event_loop(loop)
-    loop.add_reader(pollfd, drain)
+    if pollfd is not None:
+        loop.add_reader(pollfd, drain)
     try:
         loop.run_forever()
     finally:
-        try:
-            loop.remove_reader(pollfd)
-        except Exception:
-            pass
+        if pollfd is not None:
+            try:
+                loop.remove_reader(pollfd)
+            except Exception:
+                pass
 
 
 def stop_loop(loop):

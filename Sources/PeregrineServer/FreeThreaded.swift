@@ -174,10 +174,10 @@ final class WorkerThread {
     let index: Int
     let config: ServerConfig
     let loaded: Peregrine.LoadedApplication
-    let listenFD: Int32
+    let listenFD: AvianSocket
     /// The worker polls the read end; the main thread holds the write end.
-    let controlRead: Int32
-    let controlWrite: Int32
+    let controlRead: AvianSocket
+    let controlWrite: AvianSocket
     unowned let group: WorkerGroup
     /// This thread's slot in the shared metrics page. Not the same as `index`:
     /// the supervisor moves a replacement process onto the other block of slots
@@ -190,10 +190,10 @@ final class WorkerThread {
     private var handle: OpaquePointer? = nil
 
     init?(index: Int, config: ServerConfig, loaded: Peregrine.LoadedApplication,
-          listenFD: Int32, group: WorkerGroup, metricsSlot: Int) {
-        var fds: (Int32, Int32) = (-1, -1)
+          listenFD: AvianSocket, group: WorkerGroup, metricsSlot: Int) {
+        var fds: (AvianSocket, AvianSocket) = (noSocket, noSocket)
         let rc = withUnsafeMutableBytes(of: &fds) { raw in
-            av_pipe(raw.baseAddress!.assumingMemoryBound(to: Int32.self))
+            av_pipe(raw.baseAddress!.assumingMemoryBound(to: AvianSocket.self))
         }
         if rc != 0 {
             Log.error("cannot create the worker control pipe")
@@ -242,7 +242,8 @@ final class WorkerThread {
         guard let workerPtr = Peregrine.makeWorker(config, listenFD: listenFD,
                                                    controlFD: controlRead,
                                                    loaded: loaded,
-                                                   metricsSlot: metricsSlot) else {
+                                                   metricsSlot: metricsSlot,
+                                                   firstOfProcess: index == 0) else {
             currentWorker = nil
             group.markFailed()
             pg_gil_release(state)
@@ -255,7 +256,7 @@ final class WorkerThread {
         // it when it drains. On a unix socket every thread in this process is
         // accepting from the one descriptor bound by the supervisor, so closing
         // it here would take the other threads off the socket too.
-        workerPtr.pointee.ownsListener = (config.unixPath == nil)
+        workerPtr.pointee.ownsListener = !Peregrine.sharesOneListener(config)
 
         /// Gives back everything this thread has taken and reports the failure,
         /// so that start-up ends as one clear error rather than a server that
@@ -340,7 +341,7 @@ private func workerThreadEntry(_ raw: UnsafeMutableRawPointer?) {
 final class ThreadSupervisor {
     let group: WorkerGroup
     let config: ServerConfig
-    let signalFD: Int32
+    let signalFD: AvianSocket
     /// The main thread's own event loop in ASGI mode: it watches the signal
     /// pipe and keeps running while the workers drain. Under
     /// `--lifespan-scope process` it also hosts the one lifespan.
@@ -352,7 +353,7 @@ final class ThreadSupervisor {
     /// When a drain that is taking too long stops being a drain.
     var deadline: UInt64 = 0
 
-    init(group: WorkerGroup, config: ServerConfig, signalFD: Int32) {
+    init(group: WorkerGroup, config: ServerConfig, signalFD: AvianSocket) {
         self.group = group
         self.config = config
         self.signalFD = signalFD
@@ -461,7 +462,7 @@ extension Peregrine {
     /// they overlap.
     static func runFreeThreaded(_ config: ServerConfig,
                                 workers: Int,
-                                listeners: UnsafeMutablePointer<Int32>?,
+                                listeners: UnsafeMutablePointer<AvianSocket>?,
                                 listenerCount: Int,
                                 metricsSlotBase: Int) -> Bool {
         let count = max(1, workers)
@@ -527,9 +528,9 @@ extension Peregrine {
         // that cannot be duplicated -- letting each worker bind for itself would
         // have each one unlink and replace the socket the last had just
         // published, leaving one worker reachable.
-        var sharedUnixFD: Int32 = -1
+        var sharedUnixFD: AvianSocket = noSocket
         if config.unixPath != nil {
-            if let listeners, listenerCount > 0, listeners[0] >= 0 {
+            if let listeners, listenerCount > 0, isSocket(listeners[0]) {
                 sharedUnixFD = listeners[0]
             } else {
                 guard let opened = openListener(config, reusePort: false,
@@ -541,10 +542,10 @@ extension Peregrine {
         }
 
         for index in 0..<count {
-            let fd: Int32
-            if sharedUnixFD >= 0 {
+            let fd: AvianSocket
+            if isSocket(sharedUnixFD) {
                 fd = sharedUnixFD
-            } else if let listeners, index < listenerCount, listeners[index] >= 0 {
+            } else if let listeners, index < listenerCount, isSocket(listeners[index]) {
                 // TCP: one socket per worker with SO_REUSEPORT, so each gets an
                 // independent accept queue, exactly as a worker process does.
                 fd = listeners[index]
