@@ -64,7 +64,7 @@ let pythonLinkFlags: [LinkerSetting] = []
 // of the released one, for changes that span both.
 let aviancore: Package.Dependency = Context.environment["PEREGRINE_AVIANCORE_PATH"]
     .map { .package(path: $0) }
-    ?? .package(url: "https://github.com/grepjava/aviancore", .upToNextMinor(from: "0.7.1"))
+    ?? .package(url: "https://github.com/grepjava/aviancore", .upToNextMinor(from: "0.8.0"))
 
 /// Settings for every target that sees Python.h.
 let pythonSwiftSettings = sharedSwiftSettings + pythonSwiftFlags

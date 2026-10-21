@@ -183,8 +183,8 @@ Peregrine only when aviancore takes it and Peregrine cuts a release — for a
 wheel, because the wheel carries the compiled copy, and for the sdist, because
 the version range here decides what it compiles.
 
-`Package.swift` declares aviancore with `.upToNextMinor`, so a `0.7.x` patch
-is picked up by a fresh sdist build without a Peregrine change, while `0.8.0`
+`Package.swift` declares aviancore with `.upToNextMinor`, so a `0.8.x` patch
+is picked up by a fresh sdist build without a Peregrine change, while `0.9.0`
 is not. That is deliberate: security fixes are meant to land as patches.
 Wheels are frozen at build time regardless, so **a wheel always needs a new
 Peregrine release**, whatever the range says.

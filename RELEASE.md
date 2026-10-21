@@ -20,6 +20,10 @@ version reached PyPI, in UTC.
 
 ## Unreleased
 
+---
+
+## 1.2.0 — 2026-10-21
+
 ### Added
 
 - **Windows.** Peregrine runs natively on Windows 10 and later (x86-64), and
