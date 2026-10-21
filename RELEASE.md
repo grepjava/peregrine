@@ -20,6 +20,21 @@ version reached PyPI, in UTC.
 
 ## Unreleased
 
+### Added
+
+- **Windows.** Peregrine runs natively on Windows 10 and later (x86-64), and
+  PyPI has `win_amd64` wheels for CPython 3.11 to 3.15 and free-threaded 3.14t
+  and 3.15t, carrying the Swift runtime and OpenSSL DLLs they need. Every
+  option works. Workers are processes started afresh with the listener and
+  the shared memory inherited, signals are console events (Ctrl-Break stops
+  gracefully), and asyncio runs on its default Proactor loop.
+  [CONFIG.md](CONFIG.md#windows) has what differs: no SIGHUP, HTTP/3 on one
+  worker, and TLS, static files and QUIC sends without Linux's fast paths. The
+  feature, HTTP/2, HTTP/3, WebSocket, WebTransport and upload suites pass
+  natively there.
+- Built on aviancore 0.8.0, which is what makes Windows possible. Nothing
+  changes on Linux or macOS.
+
 ---
 
 ## 1.1.8 — 2026-10-21

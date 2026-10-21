@@ -37,6 +37,29 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 BIN = sys.argv[1] if len(sys.argv) > 1 else os.environ.get(
     "PEREGRINE", os.path.expanduser("~/pgbuild/release/peregrine"))
 PORT = int(os.environ.get("PORT", "8261"))
+
+# Windows has no process groups to signal. A server in a console process group
+# of its own takes Ctrl-Break as SIGTERM, and kill() ends it and its workers.
+WINDOWS = sys.platform == "win32"
+NEW_SESSION = ({"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if WINDOWS
+               else {"start_new_session": True})
+
+
+def stop(server):
+    try:
+        if WINDOWS:
+            server.send_signal(signal.CTRL_BREAK_EVENT)
+        else:
+            os.killpg(server.pid, signal.SIGTERM)
+        server.wait(timeout=10)
+    except (ProcessLookupError, subprocess.TimeoutExpired):
+        try:
+            if WINDOWS:
+                server.kill()
+            else:
+                os.killpg(server.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
 EXTRA = shlex.split(os.environ.get("PEREGRINE_EXTRA_ARGS", ""))
 WORK = tempfile.mkdtemp(prefix="stale-send-")
 LOG = os.path.join(WORK, "calls.log")
@@ -246,7 +269,7 @@ def main():
     server = subprocess.Popen(
         [BIN, "--port", str(PORT), "--workers", "1", "--log-level", "info", *EXTRA,
          "--python-path", HERE, "stale_send_apps:app"],
-        stdout=server_log, stderr=subprocess.STDOUT, env=env, start_new_session=True)
+        stdout=server_log, stderr=subprocess.STDOUT, env=env, **NEW_SESSION)
     try:
         for _ in range(100):
             try:
@@ -269,14 +292,7 @@ def main():
         alive = server.poll() is None
         check("the server is still running", alive)
     finally:
-        try:
-            os.killpg(server.pid, signal.SIGTERM)
-            server.wait(timeout=10)
-        except (ProcessLookupError, subprocess.TimeoutExpired):
-            try:
-                os.killpg(server.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
+        stop(server)
         server_log.close()
 
     print(f"\nstale send: {passed} passed, {failed} failed")

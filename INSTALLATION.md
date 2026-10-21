@@ -42,7 +42,7 @@ interpreter that has not been built yet — still needs:
 | **OpenSSL** | development files. TLS 1.3, and QUIC's use of it, need `libssl` and `libcrypto` |
 | **pkg-config** | how the build locates all of the above |
 | **patchelf** | Linux only; rewrites the server so the Swift runtime can travel with it |
-| **An OS with epoll or kqueue** | Linux, or macOS 14+. Not Windows — see [below](#windows) |
+| **A supported OS** | Linux, macOS 14+, or Windows 10+ on x86-64 — see [Windows](#windows) |
 
 ### Ubuntu and Debian
 
@@ -67,6 +67,23 @@ brew install pkg-config openssl@3
 
 Use a python.org or Homebrew build of Python. The system Python that Apple
 ships has no development files, and `pkg-config` will not find it.
+
+<a name="windows"></a>
+### Windows
+
+A matching wheel needs nothing: there are `win_amd64` wheels for every
+interpreter the Linux ones cover, and each carries the Swift runtime and
+OpenSSL DLLs it loads. Building from the sdist needs
+
+- Swift 6.1 or newer from [swift.org/install](https://swift.org/install), with
+  the Visual Studio C++ build tools its installer asks for;
+- OpenSSL for Windows, the full x64 package from
+  [slproweb.com](https://slproweb.com/products/Win32OpenSSL.html) (not
+  "Light"), in its default location or wherever `OPENSSL_DIR` says;
+- a python.org or uv-managed CPython, which carry `include` and `libs`.
+
+`pip` finds Visual Studio itself; neither pkg-config nor patchelf is used.
+What differs once it runs is in [CONFIG.md](CONFIG.md#windows).
 
 ---
 
@@ -100,8 +117,9 @@ small VPS.
 The wheels cover CPython 3.11 to 3.15 and free-threaded 3.14t and 3.15t, on
 Linux x86_64 and aarch64 with glibc 2.35 or newer (`manylinux_2_35`): Debian 12,
 Ubuntu 22.04, what came after them, Fedora, and the official `python:*-slim`
-images. Older glibc, Alpine's musl and macOS compile from the sdist. When it
-finishes:
+images. On Windows 10 and later there are `win_amd64` wheels for the same
+interpreters. Older glibc, Alpine's musl and macOS compile from the sdist. When
+it finishes:
 
 ```bash
 $ peregrine --version
@@ -371,9 +389,9 @@ the top-level package, not the package itself.
 **`--http3 needs --tls-cert and --tls-key`** — QUIC is encrypted from its first
 packet; there is nothing to serve without a certificate.
 
-<a name="windows"></a>
-**Windows** — the I/O layer is epoll and kqueue, so there is no Windows build.
-WSL 2 works normally and is what the project is developed on.
+**Windows: `the Swift build failed` with link errors naming `SSL_` or
+`EVP_`** — OpenSSL was not found, or the "Light" package was installed, which
+has no import libraries. Install the full package, or set `OPENSSL_DIR`.
 
 ---
 

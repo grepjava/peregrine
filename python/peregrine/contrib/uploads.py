@@ -86,7 +86,6 @@ local disk that is the same trade as serving a static file.
 import asyncio
 import base64
 import dataclasses
-import fcntl
 import hashlib
 import inspect
 import json
@@ -95,6 +94,47 @@ import os
 import secrets
 import threading
 import time
+
+try:
+    import fcntl
+except ImportError:                     # Windows
+    fcntl = None
+    import msvcrt
+
+# os.open is text mode on Windows unless told otherwise, and an upload is bytes.
+_BINARY = getattr(os, "O_BINARY", 0)
+
+# Windows locks byte ranges rather than files, and a locked range refuses
+# other handles' writes into it. So the lock is one byte far beyond any
+# offset an upload can reach, where it excludes the other lockers and
+# nothing else.
+_FAR = 1 << 62
+
+
+def _try_lock(fd, exclusive):
+    """flock(LOCK_NB), shared or exclusive; False when another handle holds
+    it. Windows has no shared lock: there `busy` takes the exclusive one
+    and lets it straight go, which answers the same question."""
+    try:
+        if fcntl is not None:
+            fcntl.flock(fd, (fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH) | fcntl.LOCK_NB)
+        else:
+            os.lseek(fd, _FAR, os.SEEK_SET)
+            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+            if not exclusive:
+                _unlock(fd)
+    except (BlockingIOError, PermissionError):
+        return False
+    return True
+
+
+def _unlock(fd):
+    if fcntl is not None:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+    else:
+        os.lseek(fd, _FAR, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+
 
 __all__ = [
     "ResumableUploads",
@@ -301,7 +341,7 @@ class _Handle:
     def release(self):
         if self._fd >= 0:
             try:
-                fcntl.flock(self._fd, fcntl.LOCK_UN)
+                _unlock(self._fd)
             finally:
                 os.close(self._fd)
                 self._fd = -1
@@ -353,7 +393,7 @@ class FileUploadStore:
                repr_digest=None, metadata=None):
         """Starts an upload with nothing in it."""
         upload_id = secrets.token_hex(16)
-        fd = os.open(self.data_path(upload_id), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        fd = os.open(self.data_path(upload_id), os.O_WRONLY | os.O_CREAT | os.O_EXCL | _BINARY, 0o600)
         os.close(fd)
         info = UploadInfo(id=upload_id, offset=0, length=length, complete=False,
                           created_at=int(time.time()), content_type=content_type,
@@ -383,15 +423,15 @@ class FileUploadStore:
         it. Raises FileNotFoundError for an upload that does not exist."""
         if not self._valid(upload_id):
             raise FileNotFoundError(upload_id)
-        fd = os.open(self.data_path(upload_id), os.O_WRONLY | os.O_APPEND)
+        fd = os.open(self.data_path(upload_id), os.O_WRONLY | os.O_APPEND | _BINARY)
         try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            os.close(fd)
-            return None
+            locked = _try_lock(fd, exclusive=True)
         except BaseException:
             os.close(fd)
             raise
+        if not locked:
+            os.close(fd)
+            return None
         return _Handle(upload_id, fd, os.fstat(fd).st_size)
 
     def busy(self, upload_id):
@@ -399,14 +439,11 @@ class FileUploadStore:
         if not self._valid(upload_id):
             return False
         try:
-            fd = os.open(self.data_path(upload_id), os.O_RDONLY)
+            fd = os.open(self.data_path(upload_id), os.O_RDONLY | _BINARY)
         except FileNotFoundError:
             return False
         try:
-            fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
-            return False
-        except BlockingIOError:
-            return True
+            return not _try_lock(fd, exclusive=False)
         finally:
             os.close(fd)
 
@@ -518,7 +555,7 @@ class FileUploadStore:
     def _write(self, path, data):
         """Written aside and renamed over, so a reader never sees half."""
         temporary = "%s.%d.%d.tmp" % (path, os.getpid(), threading.get_ident())
-        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | _BINARY, 0o600)
         try:
             view = memoryview(data)
             while view:

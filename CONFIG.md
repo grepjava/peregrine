@@ -1194,6 +1194,43 @@ just "it is not any faster".
 restarts the workers without dropping the listening socket, which is how to
 pick up new code without dropping a connection.
 
+## Windows
+
+Peregrine runs natively on Windows 10 and later, x86-64, with the same options
+and the same supervisor, and the suites pass there. What differs is what the
+operating system has no equivalent for.
+
+- **Workers are processes started afresh, not forked.** The supervisor runs
+  the same command line again for each worker and hands it the listening
+  socket and the shared memory (cache, rate limits, metrics) as inherited
+  handles. Start-up therefore imports the application once per worker, as it
+  does on Linux, plus one interpreter start that a fork would have saved.
+  `--free-threaded` is one such process holding every worker as a thread.
+- **One listening socket, accepted from by every worker.** Windows has no
+  `SO_REUSEPORT` group to spread connections, so the workers share the
+  supervisor's socket, as they share a `--unix` one everywhere. The
+  `--metrics-port` and `--redirect-http` sockets are shared the same way.
+- **HTTP/3 is served by one worker.** A UDP socket read by several processes
+  would hand each connection's packets to whichever process read first, so
+  only the first worker (or the first thread, under `--free-threaded`) takes
+  QUIC. HTTP/1.1 and HTTP/2 use them all.
+- **Signals are console events.** Ctrl-C stops the server at once (SIGINT)
+  and Ctrl-Break, closing the console, logging off and shutting down stop it
+  gracefully (SIGTERM, with `--drain-delay`). A service manager that sends
+  Ctrl-Break to the process group gets the graceful stop. The supervisor
+  passes them on to the workers over a socket of its own, and workers end
+  with it however it ends. There is no SIGHUP: `--reload` and `--acme-domain`
+  replace workers as they do on Linux, but a certificate renewed some other
+  way needs a restart.
+- **The event loop is Proactor**, asyncio's default on Windows, so
+  subprocesses and the rest of the asyncio API work as an application
+  expects. A thread of the server's watches its sockets and hands the loop
+  each batch of ready connections, because Proactor cannot watch them
+  itself; uvloop does not run on Windows.
+- **Slower in places, for now.** TLS runs BoringSSL's portable C rather than
+  its assembly, static files are read and sent rather than `sendfile`d, and
+  HTTP/3 sends one datagram per call. None of that changes what is served.
+
 ---
 
 Next: [INSTALLATION.md](INSTALLATION.md) — getting it built and installed.

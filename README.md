@@ -295,7 +295,7 @@ it. [Details.](https://github.com/grepjava/peregrine/blob/main/CONFIG.md#free-th
 A wheel is tagged for one CPython and one platform. PyPI has them for CPython
 3.11 to 3.15 and free-threaded 3.14t and 3.15t, on Linux x86_64 and aarch64 with glibc
 2.35 or newer: Debian 12, Ubuntu 22.04, what came after them, and the official
-`python:*-slim` images. When one matches, `pip` installs it and Swift is not
+`python:*-slim` images, and on Windows x86-64. When one matches, `pip` installs it and Swift is not
 required. When none does, as on macOS, Alpine or an older distribution, `pip`
 compiles the sdist against the interpreter you are installing into:
 
@@ -577,6 +577,8 @@ swift run -c release pgfuzz                     # mutation fuzzing of every
 3.11 through 3.15 and free-threaded 3.14 and 3.15, on Linux and macOS, plus the
 fuzzer under AddressSanitizer. The suites are the ones above — there is no
 CI-only test path, so a green run there means what a green run here means.
+The Python suites also run natively on Windows, by hand for now, with the same
+counts less the checks that need `/proc` or a unix socket.
 [More on the fuzzing.](https://github.com/grepjava/peregrine/blob/main/fuzz/README.md)
 
 HTTP/2 conformance is checked with
@@ -614,7 +616,11 @@ own bytes.
 - **HTTP/3 server push, and WebSocket over HTTP/2 or HTTP/3.** HTTP/3
   advertises extended `CONNECT` because that is how WebTransport arrives;
   `webtransport` is the only `:protocol` served. HTTP/2 does not advertise it.
-- **Windows.** The I/O layer is epoll/kqueue.
+- **A SIGHUP on Windows, and its fast paths.** Windows has no SIGHUP, so a
+  certificate renewed outside `--acme-domain` needs a restart there. HTTP/3 is
+  served by one worker, and TLS, static files and QUIC sends run without the
+  assembly, `sendfile` and segmentation offload Linux has.
+  [Details.](https://github.com/grepjava/peregrine/blob/main/CONFIG.md#windows)
 - **Spans.** `--trace-context` puts an incoming W3C trace on the access-log
   line and hands the header to the application untouched, and there are
   Prometheus metrics on `--metrics-port`, but the server records no
